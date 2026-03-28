@@ -34,9 +34,11 @@
       --red-dim: #661111;
       --green: #33ff33;
       --amber: #ffaa00;
-      --pill-idle: #2a2a2a;
-      --pill-normal: #00dc82;
-      --pill-anomaly: #ff3b3b;
+      --pill-normal: #0ebe08;
+      /* Daha koyu bir mavi */
+      --pill-empty: #333333;
+      /* Henüz veri gelmeyen (Gri) durum */
+      --pill-anomaly: #ff1a1a;
       --font: 'Share Tech Mono', monospace;
       --scanline-opacity: 0.04;
     }
@@ -100,7 +102,6 @@
     #topbar h1 span.red {
       color: var(--red);
     }
-
 
     #conn-dot {
       width: 8px;
@@ -169,41 +170,39 @@
 
     #matrix-grid {
       display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
-      align-content: flex-start;
+      flex-direction: column;
+      gap: 4px;
       overflow: hidden;
     }
 
+    .matrix-row {
+      display: flex;
+      gap: 4px;
+      justify-content: center;
+      /* Animasyon kaldırıldı */
+    }
+
     .matrix-pill {
-      width: 28px;
+      width: 14px;
+      /* Ekrana daha çok sığması için küçülttük */
       height: 14px;
-      border-radius: 4px;
-      background: var(--pill-idle);
-      transition: background 0.3s ease, box-shadow 0.3s ease;
+      border-radius: 3px;
+      background: var(--pill-empty);
+      /* Başlangıç rengini GRİ yaptık */
+      transition: background 0.2s, box-shadow 0.2s;
       flex-shrink: 0;
     }
 
     .matrix-pill.normal {
       background: var(--pill-normal);
-      box-shadow: 0 0 6px rgba(0, 220, 130, 0.5);
+      /* Veri normal gelirse KOYU MAVİ */
+      box-shadow: 0 0 4px var(--pill-normal);
     }
 
     .matrix-pill.anomaly {
       background: var(--pill-anomaly);
-      box-shadow: 0 0 8px rgba(255, 59, 59, 0.7);
-    }
-
-    .matrix-pill.fading-normal {
-      background: var(--pill-idle);
-      box-shadow: none;
-      transition: background 1s ease, box-shadow 1s ease;
-    }
-
-    .matrix-pill.fading-anomaly {
-      background: var(--pill-idle);
-      box-shadow: none;
-      transition: background 1.5s ease, box-shadow 1.5s ease;
+      /* Veri anomaliyse KIRMIZI */
+      box-shadow: 0 0 6px var(--red);
     }
 
     /* ── Charts  ───────────────────────────────────────────────────────── */
@@ -398,9 +397,6 @@
 
 <body>
 
-  <!-- ═══════════════════════════════════════════════════════════════════
-     TOP BAR
-     ═══════════════════════════════════════════════════════════════════ -->
   <header id="topbar">
     <h1>▌ MARS ROVER — <span class="red">MISSION CONTROL</span> ▐</h1>
     <div id="conn-status">
@@ -409,12 +405,8 @@
     </div>
   </header>
 
-  <!-- ═══════════════════════════════════════════════════════════════════
-     MAIN 2-COLUMN
-     ═══════════════════════════════════════════════════════════════════ -->
   <div id="main">
 
-    <!-- LEFT COLUMN ──────────────────────────────────────────────────── -->
     <div class="col col-left">
 
       <div class="panel" id="matrix-panel">
@@ -434,7 +426,6 @@
 
     </div>
 
-    <!-- RIGHT COLUMN ─────────────────────────────────────────────────── -->
     <div class="col col-right">
 
       <div class="panel" id="averages-panel">
@@ -469,9 +460,6 @@
     </div>
   </div>
 
-  <!-- ═══════════════════════════════════════════════════════════════════
-     JAVASCRIPT
-     ═══════════════════════════════════════════════════════════════════ -->
   <script>
     (function () {
       'use strict';
@@ -479,9 +467,8 @@
       /* ══════════════════════════════════════════════════════════════════════
          CONSTANTS
          ══════════════════════════════════════════════════════════════════════ */
-      const PILL_W = 28;
-      const PILL_H = 14;
-      const PILL_GAP = 5;
+      const MATRIX_COLS = 51;             // Yatayda sığabildiği kadar artırıldı
+      const MATRIX_ROWS = 16;             // Dikeyde sığabildiği kadar artırıldı
       const CHART_MAX_POINTS = 60;
       const MQTT_BROKER = 'ws://localhost:9001';
       const MQTT_TOPIC = 'rover/telemetry';
@@ -496,10 +483,11 @@
       let mqttConnected = false;
       let simTimer = null;
       let simCounter = 0;
-      let matrixCols = 0;
-      let matrixTotalPills = 0;
-      let matrixCursor = 0;               // next pill index to light up
-      const matrixTimers = [];            // timeout IDs for pill fade-back
+
+      // Tüm pilleri tutacak tek bir liste (Başlangıçta hepsi null, yani gri)
+      const TOTAL_PILLS = MATRIX_COLS * MATRIX_ROWS;
+      const matrixHistory = new Array(TOTAL_PILLS).fill(null);
+
       const avgBuffer = [];               // last N sensor readings
       const MAX_AVG = 30;
 
@@ -636,84 +624,43 @@
       }
 
       /* ══════════════════════════════════════════════════════════════════════
-         ANOMALY MATRIX (dynamic grid, 3-state pills, sweeping wave)
+         ANOMALY MATRIX (HÜCRE HÜCRE AKIŞ)
          ══════════════════════════════════════════════════════════════════════ */
-      const NORMAL_FADE_MS = 3500;   // green → gray
-      const ANOMALY_FADE_MS = 9000;  // red → gray
+      function pushMatrixData(isAnom) {
+        matrixHistory.unshift(isAnom); // Yeni gelen veriyi en başa ekle
+        matrixHistory.pop();           // En sondaki (eski) veriyi sil
+        renderMatrix();
+      }
 
-      function buildMatrixGrid() {
-        // Measure available space inside the panel (below the title)
-        const panel = document.getElementById('matrix-panel');
-        const title = panel.querySelector('.panel-title');
-        const style = getComputedStyle(panel);
-        const padTop = parseFloat(style.paddingTop);
-        const padBot = parseFloat(style.paddingBottom);
-        const padLeft = parseFloat(style.paddingLeft);
-        const padRight = parseFloat(style.paddingRight);
-        const availW = panel.clientWidth - padLeft - padRight;
-        const availH = panel.clientHeight - padTop - padBot - title.offsetHeight - 8; // 8px title mb
-
-        const cols = Math.floor((availW + PILL_GAP) / (PILL_W + PILL_GAP));
-        const rows = Math.floor((availH + PILL_GAP) / (PILL_H + PILL_GAP));
-        matrixCols = Math.max(cols, 1);
-        matrixTotalPills = Math.max(matrixCols * rows, 1);
-
-        // Clear existing
+      function renderMatrix() {
         $matrixGrid.innerHTML = '';
-        matrixTimers.length = 0;
-        matrixCursor = 0;
+        for (let r = 0; r < MATRIX_ROWS; r++) {
+          const rowEl = document.createElement('div');
+          rowEl.className = 'matrix-row';
+          rowEl.style.opacity = String(1 - r * (1 / MATRIX_ROWS)); // Eskiye doğru kararır
 
-        // Create all pills in idle state
-        for (let i = 0; i < matrixTotalPills; i++) {
-          const pill = document.createElement('div');
-          pill.className = 'matrix-pill';
-          $matrixGrid.appendChild(pill);
-          matrixTimers.push(null);
+          for (let c = 0; c < MATRIX_COLS; c++) {
+            const idx = r * MATRIX_COLS + c;
+            const val = matrixHistory[idx];
+
+            const pill = document.createElement('div');
+
+            // Verinin tipine göre ilgili class'ı veriyoruz
+            if (val === null) {
+              pill.className = 'matrix-pill'; // Değer yoksa varsayılan Gri
+            } else if (val === true) {
+              pill.className = 'matrix-pill anomaly'; // Anomali ise Kırmızı
+            } else {
+              pill.className = 'matrix-pill normal'; // Normalse Koyu Mavi
+            }
+
+            rowEl.appendChild(pill);
+          }
+          $matrixGrid.appendChild(rowEl);
         }
       }
 
-      function lightPill(isAnomaly) {
-        const pills = $matrixGrid.children;
-        if (pills.length === 0) return;
-
-        const pill = pills[matrixCursor];
-
-        // Clear any pending fade timer for this slot
-        if (matrixTimers[matrixCursor]) {
-          clearTimeout(matrixTimers[matrixCursor]);
-        }
-
-        // Remove old state classes
-        pill.className = 'matrix-pill';
-        // Force reflow so transition restarts
-        void pill.offsetWidth;
-
-        // Light it up
-        if (isAnomaly) {
-          pill.classList.add('anomaly');
-          matrixTimers[matrixCursor] = setTimeout(function () {
-            pill.className = 'matrix-pill fading-anomaly';
-          }, ANOMALY_FADE_MS);
-        } else {
-          pill.classList.add('normal');
-          matrixTimers[matrixCursor] = setTimeout(function () {
-            pill.className = 'matrix-pill fading-normal';
-          }, NORMAL_FADE_MS);
-        }
-
-        // Advance cursor, wrapping around
-        matrixCursor = (matrixCursor + 1) % matrixTotalPills;
-      }
-
-      // Build on load
-      buildMatrixGrid();
-
-      // Rebuild on resize
-      let resizeTimer = null;
-      window.addEventListener('resize', function () {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(buildMatrixGrid, 200);
-      });
+      renderMatrix(); // Sayfa açılışında matrisi gri olarak çiz
 
       /* ══════════════════════════════════════════════════════════════════════
          AVERAGES
@@ -864,7 +811,6 @@
       /* ══════════════════════════════════════════════════════════════════════
          PROCESS INCOMING TELEMETRY
          ══════════════════════════════════════════════════════════════════════ */
-
       function processTelemetry(payload) {
         const sensor = payload.sensor;
         const anomaly = payload.anomaly;
@@ -879,8 +825,8 @@
         // ── Averages
         updateAverages(sensor);
 
-        // ── Matrix (light next pill in sequence)
-        lightPill(isAnom);
+        // ── Matrix Data Update (Tek tek akış)
+        pushMatrixData(isAnom);
 
         // ── Terminal log
         if (isAnom) {
