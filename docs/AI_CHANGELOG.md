@@ -2,6 +2,89 @@
 
 ---
 
+## [2026-03-29] earth_dashboard.html — JPL Earth-Side Mission Control Dashboard
+
+### What Changed
+
+**File:** `earth_dashboard.html` (new, 1059 lines) — commit `a9bc494`
+
+#### 1. New Component: Earth Relay Dashboard
+
+A second single-file HTML dashboard (`earth_dashboard.html`) was created alongside the existing rover-side `dashboard.html`. It represents the **Earth-side JPL Deep Space Operations** view, receiving anomaly alerts relayed from the rover with a simulated 18.4-second Mars-to-Earth transmission delay.
+
+**Architecture:** Pages subscribe to the `earth/alerts` MQTT topic (distinct from `rover/telemetry`). When connected, it only displays alerts where `anomaly.is_anomaly = true`. If the MQTT broker is unreachable, it falls back to simulation mode generating realistic REMS-range anomalies every 15–25s.
+
+#### 2. Layout & Panels
+
+**Left column:**
+- **Signal Feed** — terminal-style anomaly cards with red left border, slide-in animation, and full data: origin timestamp (Mars), transmission timestamp (Earth), 18.4s delay label, per-sensor [CRITICAL/ELEVATED/NOMINAL] tags, triggered models (IF/LOF/ZSCORE), weighted score, and human-readable root cause text.
+- **Transmission Timeline** — Chart.js scatter plot of the last 10 received alerts over a 5-minute sliding window. Dot size scales with weighted score (4–16px range). Auto-scrolls every 10s.
+
+**Right column:**
+- **Anomaly Statistics** — live counters: total signals received, CRITICAL (score > 0.8), ELEVATED (0.5 < score ≤ 0.8), most-triggered model, average weighted score, peak temperature/radiation/methane, session uptime.
+- **Earth Receiving Station Status** — simulated DSN readout cycling through DSN-26 Goldstone / DSN-43 Canberra / DSN-63 Madrid with drifting signal strength (dBm), bit rate (kbps), uptime, and last ACK. Refreshes every second.
+- **Alert Severity Gauge** — horizontal bar stack of the last 20 received scores. Bars color-coded by tier and opacity-faded oldest→newest for temporal sense.
+
+**Header:**
+- Amber boxed `⏱ TRANSMISSION DELAY: 18.4s` badge.
+- Animated `⟶ INCOMING SIGNAL... [████░░░░░░] N%` progress bar ticking during the 18.4s delay window.
+- Green/amber connection status dot + label (`CONNECTED` / `SIMULATED MODE`).
+- Live Mars Sol counter (base SOL 4521) and UTC clock.
+- CRT scanline overlay and pulsing blue logo mark.
+
+**Visual identity:** Matches `dashboard.html` aesthetic exactly (Share Tech Mono, dark palette `#060a12`, CRT scanlines) with **blue accent** (`#0077ff`) instead of green to distinguish Earth-side from rover-side.
+
+#### 3. Bug Fix — Round 1: Overlapping Stats Counters
+
+**File:** `earth_dashboard.html` → `updateStats()`
+
+```js
+// BEFORE (broken): both fire for score > 0.8, double-counting into ELEVATED
+if (score > 0.8) stats.critical++;
+if (score > 0.5) stats.elevated++;   // also fires when score > 0.8
+
+// AFTER (fixed): mutually exclusive tiers
+if (score > 0.8)       stats.critical++;
+else if (score > 0.5)  stats.elevated++;
+```
+
+HTML label updated from `ELEVATED (score > 0.5)` → `ELEVATED (0.5 < score ≤ 0.8)` to make the tier boundary explicit.
+
+#### 4. Bug Fix — Round 2: Three-Component Threshold Inconsistency
+
+**Root cause (identified via live browser debug session):**
+
+Two independent bugs remained after Round 1:
+
+**A. Floating-point drift:** `anomaly.weighted_score` is a raw float from `randBetween(0.52, 0.95)`. Values like `0.8000000000000001` compared against `> 0.8` crossed the threshold unpredictably, placing borderline scores into the wrong bucket.
+
+```js
+// FIX: normalize before comparison
+const scoreClamped = parseFloat(score.toFixed(2));
+if (scoreClamped > 0.8)       stats.critical++;
+else if (scoreClamped > 0.5)  stats.elevated++;
+```
+
+**B. Threshold mismatch across components:** The severity gauge and timeline chart used `> 0.7` for red/high, while the stats panel used `> 0.8` for CRITICAL. A score of 0.75 rendered as a **red bar** (visually implying critical) but counted as ELEVATED — misleading the user.
+
+Changed all three components to use `> 0.8` for red/critical, `> 0.5` for amber/elevated:
+
+| Component | Before | After |
+|---|---|---|
+| `updateStats` threshold | raw `score > 0.8` | `scoreClamped > 0.8` (2dp normalized) |
+| Timeline dot color | `> 0.7` = red | `> 0.8` = red |
+| Gauge bar color | `> 0.7` = red | `> 0.8` = red |
+
+### Verification Results
+
+- Dashboard renders in Chrome: all 5 panels visible, header fully populated.
+- Simulation mode activates within 6s of load when broker unavailable (amber `SIMULATED MODE`).
+- First sim alert arrives after ~15s wait + 18.4s delay. Alert card appears with slide-in, stats panel updates, gauge bar appears, timeline dot plotted.
+- Confirmed after Round 2 fix: scores 0.52–0.80 → ELEVATED (amber gauge), scores 0.81–0.95 → CRITICAL (red gauge) — counters and visuals now agree.
+- Commit `a9bc494` pushed to `origin/main`.
+
+---
+
 ## [2026-03-29] train.py — NASA REMS Data Ranges + Turkish Output + Self-Test
 
 ### What Changed
