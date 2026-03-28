@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EARTH MISSION CONTROL — JPL DEEP SPACE OPERATIONS</title>
+  <meta name="description" content="JPL Earth-side Mission Control — Mars Rover anomaly relay dashboard with 18.4s transmission delay simulation." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <script src="./chart.min.js"></script>
+  <script src="./mqtt.min.js"></script>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #060a12;
+      --panel-bg:     #0d1420;
+      --panel-bg2:    #111927;
+      --border:       rgba(0, 119, 255, 0.15);
+      --border-hi:    rgba(0, 119, 255, 0.40);
+      --text:         #c8d8e8;
+      --text-dim:     #5a7a8a;
+      --text-bright:  #e8f4ff;
+      --blue:         #0077ff;
+      --blue-dim:     #003d80;
+      --green:        #00dc82;
+      --red:          #ff3b3b;
+      --amber:        #ffb800;
+      --font:         'Share Tech Mono', monospace;
+      --scan-opacity: 0.04;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    /* CRT Scanline overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9999;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 3px,
+        rgba(0, 0, 0, var(--scan-opacity)) 3px,
+        rgba(0, 0, 0, var(--scan-opacity)) 4px
+      );
+    }
+
+    /* ── Top Bar ──────────────────────────────────────────────────────── */
+    #topbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 16px;
+      height: 56px;
+      background: #07101e;
+      border-bottom: 1px solid var(--border-hi);
+      flex-shrink: 0;
+    }
+
+    /* Left branding */
+    #topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    #logo-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid var(--blue);
+      background: var(--blue-dim);
+      flex-shrink: 0;
+      animation: pulse-blue 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-blue {
+      0%, 100% { box-shadow: 0 0 4px var(--blue), 0 0 10px rgba(0,119,255,0.3); }
+      50%       { box-shadow: 0 0 10px var(--blue), 0 0 24px rgba(0,119,255,0.6); }
+    }
+
+    #topbar-titles h1 {
+      font-size: 13px;
+      color: var(--blue);
+      letter-spacing: 0.1em;
+      line-height: 1.2;
+    }
+
+    #topbar-titles .sub {
+      font-size: 9px;
+      color: var(--text-dim);
+      letter-spacing: 0.08em;
+    }
+
+    /* Center badge */
+    #topbar-center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+    }
+
+    #delay-badge {
+      font-size: 11px;
+      color: var(--amber);
+      border: 1px solid var(--amber);
+      padding: 2px 8px;
+      letter-spacing: 0.05em;
+    }
+
+    #incoming-bar {
+      font-size: 9px;
+      color: var(--blue);
+      min-height: 14px;
+      letter-spacing: 0.04em;
+      text-align: center;
+    }
+
+    /* Right status */
+    #topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+
+    #conn-status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+    }
+
+    #conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--amber);
+      animation: blink 1.2s step-start infinite;
+    }
+
+    #conn-dot.connected    { background: var(--green); animation: none; }
+    #conn-dot.simulated    { background: var(--amber); }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+    #conn-label { color: var(--text-dim); }
+    #conn-label.connected { color: var(--green); }
+    #conn-label.simulated { color: var(--amber); }
+
+    #sol-counter {
+      font-size: 10px;
+      color: var(--blue);
+      border: 1px solid var(--blue-dim);
+      padding: 2px 6px;
+    }
+
+    #utc-clock {
+      font-size: 10px;
+      color: var(--text-bright);
+    }
+
+    /* ── Main Layout ──────────────────────────────────────────────────── */
+    #main {
+      display: flex;
+      gap: 10px;
+      padding: 10px;
+      height: calc(100vh - 56px);
+      min-height: 0;
+    }
+
+    .col-left  { flex: 0 0 60%; display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+    .col-right { flex: 0 0 40%; display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+    /* ── Panel ────────────────────────────────────────────────────────── */
+    .panel {
+      background: var(--panel-bg);
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+    }
+
+    .panel:hover { border-color: var(--border-hi); }
+
+    .panel-title {
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 0.1em;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+      flex-shrink: 0;
+    }
+
+    /* ── Signal Feed ──────────────────────────────────────────────────── */
+    #signal-feed-panel { flex: 1 1 0; min-height: 0; overflow: hidden; }
+
+    #signal-feed {
+      flex: 1 1 0;
+      min-height: 0;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #signal-feed::-webkit-scrollbar { width: 4px; }
+    #signal-feed::-webkit-scrollbar-track { background: transparent; }
+    #signal-feed::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
+
+    #awaiting-line {
+      font-size: 10px;
+      color: var(--text-dim);
+      padding: 4px 0;
+      animation: blink 1.4s step-start infinite;
+    }
+
+    .alert-card {
+      border-left: 3px solid var(--red);
+      background: #0f1a12;
+      padding: 8px 10px;
+      border-radius: 0 2px 2px 0;
+      font-size: 10px;
+      line-height: 1.7;
+      color: var(--text);
+      flex-shrink: 0;
+      animation: slide-in 0.35s ease-out;
+    }
+
+    @keyframes slide-in {
+      from { transform: translateX(40px); opacity: 0; }
+      to   { transform: translateX(0);    opacity: 1; }
+    }
+
+    .alert-card .alert-header {
+      color: var(--red);
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      margin-bottom: 4px;
+    }
+
+    .alert-card .alert-divider {
+      color: var(--text-dim);
+      margin: 3px 0;
+    }
+
+    .alert-card .label-key { color: var(--text-dim); }
+    .alert-card .label-val { color: var(--text-bright); }
+    .alert-card .tag-critical { color: var(--red); }
+    .alert-card .tag-elevated { color: var(--amber); }
+    .alert-card .tag-nominal  { color: var(--green); }
+    .alert-card .models-line  { color: var(--blue); }
+    .alert-card .rootcause    { color: var(--text-dim); font-style: normal; }
+    .alert-card hr-heavy      { color: var(--text-dim); }
+
+    /* ── Timeline ─────────────────────────────────────────────────────── */
+    #timeline-panel {
+      flex: 0 0 140px;
+    }
+
+    #timeline-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 9px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+
+    #last-signal-ago { color: var(--amber); }
+
+    #timeline-chart-wrap {
+      flex: 1 1 0;
+      min-height: 0;
+      position: relative;
+    }
+
+    /* ── Stats ────────────────────────────────────────────────────────── */
+    #stats-panel { flex: 0 0 auto; }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 2px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-size: 10px;
+    }
+
+    .stat-key { color: var(--text-dim); }
+    .stat-val { color: var(--text-bright); }
+    .stat-val.critical { color: var(--red); }
+    .stat-val.elevated { color: var(--amber); }
+
+    /* ── DSN Station ──────────────────────────────────────────────────── */
+    #dsn-panel { flex: 0 0 auto; }
+
+    #dsn-output {
+      font-size: 10px;
+      color: var(--text);
+      line-height: 1.8;
+      white-space: pre;
+    }
+
+    #dsn-output .key   { color: var(--text-dim); }
+    #dsn-output .val   { color: var(--text-bright); }
+    #dsn-output .head  { color: var(--blue); }
+
+    /* ── Severity Gauge ───────────────────────────────────────────────── */
+    #gauge-panel { flex: 1 1 0; min-height: 0; overflow: hidden; }
+
+    #gauge-bars {
+      flex: 1 1 0;
+      min-height: 0;
+      overflow-y: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .gauge-bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .gauge-bar-outer {
+      flex: 1 1 0;
+      height: 10px;
+      background: #0a0e16;
+      border: 1px solid rgba(255,255,255,0.06);
+      overflow: hidden;
+    }
+
+    .gauge-bar-inner {
+      height: 100%;
+      transition: width 0.4s ease;
+    }
+
+    .gauge-bar-inner.low    { background: var(--green); }
+    .gauge-bar-inner.mid    { background: var(--amber); }
+    .gauge-bar-inner.high   { background: var(--red);   }
+
+    .gauge-score {
+      font-size: 9px;
+      color: var(--text-dim);
+      width: 28px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <header id="topbar">
+    <div id="topbar-left">
+      <div id="logo-mark"></div>
+      <div id="topbar-titles">
+        <h1>▌ EARTH MISSION CONTROL — <span style="color:var(--text-bright)">JPL</span> ▐</h1>
+        <div class="sub">JPL DEEP SPACE OPERATIONS — MARS RELAY</div>
+      </div>
+    </div>
+
+    <div id="topbar-center">
+      <div id="delay-badge">⏱ TRANSMISSION DELAY: 18.4s</div>
+      <div id="incoming-bar">&nbsp;</div>
+    </div>
+
+    <div id="topbar-right">
+      <div id="conn-status">
+        <div id="conn-dot"></div>
+        <span id="conn-label">CONNECTING</span>
+      </div>
+      <div id="sol-counter">MARS SOL —</div>
+      <div id="utc-clock">00:00:00 UTC</div>
+    </div>
+  </header>
+
+  <div id="main">
+    <div class="col-left">
+
+      <!-- Panel 1: Signal Feed -->
+      <div class="panel" id="signal-feed-panel">
+        <div class="panel-title">// signal feed</div>
+        <div id="signal-feed">
+          <div id="awaiting-line">▷ AWAITING SIGNAL FROM MARS...</div>
+        </div>
+      </div>
+
+      <!-- Panel 2: Timeline -->
+      <div class="panel" id="timeline-panel">
+        <div class="panel-title">// transmission timeline</div>
+        <div id="timeline-meta">
+          <span>← 5 MINUTES AGO</span>
+          <span>LAST SIGNAL: <span id="last-signal-ago">—</span></span>
+          <span>NOW →</span>
+        </div>
+        <div id="timeline-chart-wrap">
+          <canvas id="timeline-chart"></canvas>
+        </div>
+      </div>
+
+    </div>
+    <div class="col-right">
+
+      <!-- Panel 3: Statistics -->
+      <div class="panel" id="stats-panel">
+        <div class="panel-title">// anomaly statistics</div>
+        <div id="stats-body">
+          <div class="stat-row"><span class="stat-key">TOTAL SIGNALS RECEIVED</span><span class="stat-val" id="st-total">0</span></div>
+          <div class="stat-row"><span class="stat-key">CRITICAL  (score &gt; 0.8)</span><span class="stat-val critical" id="st-critical">0</span></div>
+          <div class="stat-row"><span class="stat-key">ELEVATED  (0.5 &lt; score ≤ 0.8)</span><span class="stat-val elevated" id="st-elevated">0</span></div>
+          <div class="stat-row"><span class="stat-key">MOST TRIGGERED MODEL</span><span class="stat-val" id="st-top-model">—</span></div>
+          <div class="stat-row"><span class="stat-key">AVG WEIGHTED SCORE</span><span class="stat-val" id="st-avg-score">—</span></div>
+          <div class="stat-row"><span class="stat-key">PEAK TEMPERATURE</span><span class="stat-val" id="st-peak-temp">—</span></div>
+          <div class="stat-row"><span class="stat-key">PEAK RADIATION</span><span class="stat-val" id="st-peak-rad">—</span></div>
+          <div class="stat-row"><span class="stat-key">PEAK METHANE</span><span class="stat-val" id="st-peak-meth">—</span></div>
+          <div class="stat-row"><span class="stat-key">SESSION UPTIME</span><span class="stat-val" id="st-uptime">00:00:00</span></div>
+        </div>
+      </div>
+
+      <!-- Panel 4: DSN Station -->
+      <div class="panel" id="dsn-panel">
+        <div class="panel-title">// earth receiving station status</div>
+        <div id="dsn-output"></div>
+      </div>
+
+      <!-- Panel 5: Severity Gauge -->
+      <div class="panel" id="gauge-panel">
+        <div class="panel-title">// alert severity gauge</div>
+        <div id="gauge-bars"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+
+    /* ══════════════════════════════════════════════════════════════════════
+       CONSTANTS
+       ══════════════════════════════════════════════════════════════════════ */
+    const TRANSMISSION_DELAY_MS = 18400;
+    const MQTT_BROKER  = 'ws://localhost:9001';
+    const MQTT_TOPIC   = 'earth/alerts';
+    const SOL_BASE     = 4521;
+    const SOL_SECONDS  = 88642;           // 24h 37m 22s in seconds
+    const SOL_EPOCH_S  = Date.now() / 1000; // reference point for sol counting
+    const MAX_ALERTS   = 20;
+    const MAX_TIMELINE = 10;
+    const MAX_GAUGE    = 20;
+    const AWAIT_TIMEOUT_MS = 5000;
+
+    /* ══════════════════════════════════════════════════════════════════════
+       STATE
+       ══════════════════════════════════════════════════════════════════════ */
+    let mqttConnected  = false;
+    let simTimer       = null;
+    let lastSignalTime = null;  // Date of last received (already-delayed) alert
+    let awaitTimer     = null;
+    let sessionStart   = Date.now();
+
+    // Stats accumulation
+    const stats = {
+      total: 0,
+      critical: 0,
+      elevated: 0,
+      modelCounts: {},
+      scoreSum: 0,
+      peakTemp: null,
+      peakRad:  null,
+      peakMeth: null
+    };
+
+    // Timeline points array: { x: timestamp_ms, y: score, info: string }
+    const timelinePoints = [];
+
+    // Severity gauge queue
+    const gaugeScores = [];
+
+    // Incoming signal progress (while delay is ticking)
+    let pendingCount = 0;
+
+    /* ══════════════════════════════════════════════════════════════════════
+       DOM REFS
+       ══════════════════════════════════════════════════════════════════════ */
+    const $connDot      = document.getElementById('conn-dot');
+    const $connLabel    = document.getElementById('conn-label');
+    const $solCounter   = document.getElementById('sol-counter');
+    const $utcClock     = document.getElementById('utc-clock');
+    const $incomingBar  = document.getElementById('incoming-bar');
+    const $signalFeed   = document.getElementById('signal-feed');
+    const $awaitingLine = document.getElementById('awaiting-line');
+    const $lastAgo      = document.getElementById('last-signal-ago');
+
+    /* ══════════════════════════════════════════════════════════════════════
+       HEADER CLOCK & SOL COUNTER
+       ══════════════════════════════════════════════════════════════════════ */
+    function updateClocks() {
+      const now = new Date();
+      const hh = String(now.getUTCHours()).padStart(2, '0');
+      const mm = String(now.getUTCMinutes()).padStart(2, '0');
+      const ss = String(now.getUTCSeconds()).padStart(2, '0');
+      $utcClock.textContent = hh + ':' + mm + ':' + ss + ' UTC';
+
+      const elapsedSols = Math.floor((Date.now() / 1000 - SOL_EPOCH_S) / SOL_SECONDS);
+      $solCounter.textContent = 'MARS SOL ' + (SOL_BASE + elapsedSols);
+    }
+
+    setInterval(updateClocks, 1000);
+    updateClocks();
+
+    /* ══════════════════════════════════════════════════════════════════════
+       SESSION UPTIME
+       ══════════════════════════════════════════════════════════════════════ */
+    function updateUptime() {
+      const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+      const h = Math.floor(elapsed / 3600);
+      const m = Math.floor((elapsed % 3600) / 60);
+      const s = elapsed % 60;
+      document.getElementById('st-uptime').textContent =
+        String(h).padStart(2,'0') + ':' +
+        String(m).padStart(2,'0') + ':' +
+        String(s).padStart(2,'0');
+    }
+    setInterval(updateUptime, 1000);
+
+    /* ══════════════════════════════════════════════════════════════════════
+       LAST SIGNAL COUNTER
+       ══════════════════════════════════════════════════════════════════════ */
+    function updateLastAgo() {
+      if (!lastSignalTime) { $lastAgo.textContent = '—'; return; }
+      const s = Math.floor((Date.now() - lastSignalTime) / 1000);
+      if (s < 60) {
+        $lastAgo.textContent = s + 's ago';
+      } else {
+        $lastAgo.textContent = Math.floor(s / 60) + 'm ' + (s % 60) + 's ago';
+      }
+    }
+    setInterval(updateLastAgo, 1000);
+
+    /* ══════════════════════════════════════════════════════════════════════
+       AWAITING SIGNAL INDICATOR
+       ══════════════════════════════════════════════════════════════════════ */
+    function resetAwaitTimer() {
+      clearTimeout(awaitTimer);
+      if ($awaitingLine) $awaitingLine.style.display = 'none';
+      awaitTimer = setTimeout(function () {
+        if ($awaitingLine) $awaitingLine.style.display = '';
+      }, AWAIT_TIMEOUT_MS);
+    }
+
+    // Hide it initially since we haven't gotten anything yet
+    if ($awaitingLine) $awaitingLine.style.display = '';
+
+    /* ══════════════════════════════════════════════════════════════════════
+       TRANSMISSION PROGRESS BAR (header center)
+       ══════════════════════════════════════════════════════════════════════ */
+    function showIncomingProgress(id) {
+      pendingCount++;
+      let pct = 0;
+      const step = 100 / (TRANSMISSION_DELAY_MS / 200);
+
+      const timer = setInterval(function () {
+        pct = Math.min(pct + step, 99);
+        const filled = Math.round(pct / 10);
+        const empty = 10 - filled;
+        const bar = '█'.repeat(filled) + '░'.repeat(empty);
+        $incomingBar.textContent = '⟶ INCOMING SIGNAL... [' + bar + '] ' + Math.round(pct) + '%';
+      }, 200);
+
+      setTimeout(function () {
+        clearInterval(timer);
+        pendingCount = Math.max(0, pendingCount - 1);
+        if (pendingCount === 0) $incomingBar.textContent = '';
+      }, TRANSMISSION_DELAY_MS);
+
+      return timer;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       ROOT CAUSE TEXT
+       ══════════════════════════════════════════════════════════════════════ */
+    function rootCauseText(models) {
+      const map = {
+        'isolation_forest': 'Isolated outlier: value deviates significantly from learned cluster',
+        'lof':              'Local density anomaly: sensor neighborhood diverges from baseline',
+        'zscore':           'Statistical breach: Z-Score exceeds 2.5σ threshold'
+      };
+      return (models || []).map(function (m) { return map[m] || m; }).join(' · ') || 'Unknown cause';
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       MODEL SHORT NAME
+       ══════════════════════════════════════════════════════════════════════ */
+    function modelShort(m) {
+      if (m === 'isolation_forest') return 'IF';
+      if (m === 'lof')              return 'LOF';
+      if (m === 'zscore')           return 'ZSCORE';
+      return m.toUpperCase();
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       SENSOR TAG
+       ══════════════════════════════════════════════════════════════════════ */
+    function tempTag(v) {
+      if (v > 50)  return '<span class="tag-critical">[CRITICAL]</span>';
+      if (v > 30)  return '<span class="tag-elevated">[ELEVATED]</span>';
+      return '<span class="tag-nominal">[NOMINAL]</span>';
+    }
+    function methTag(v) {
+      if (v > 1.5) return '<span class="tag-critical">[CRITICAL]</span>';
+      if (v > 0.7) return '<span class="tag-elevated">[ELEVATED]</span>';
+      return '<span class="tag-nominal">[NOMINAL]</span>';
+    }
+    function radTag(v) {
+      if (v > 500) return '<span class="tag-critical">[CRITICAL]</span>';
+      if (v > 300) return '<span class="tag-elevated">[ELEVATED]</span>';
+      return '<span class="tag-nominal">[NOMINAL]</span>';
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       RENDER ALERT CARD
+       ══════════════════════════════════════════════════════════════════════ */
+    function renderAlert(payload) {
+      const sensor  = payload.sensor  || {};
+      const anomaly = payload.anomaly || {};
+      const originTs = payload.timestamp || new Date().toISOString();
+      const recvTs   = new Date();
+      const originDate = new Date(originTs);
+
+      const fmtDate = function (d) {
+        return d.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+      };
+
+      const temp   = (sensor.temperature   || 0).toFixed(1);
+      const meth   = (sensor.methane_level || 0).toFixed(2);
+      const rad    = (sensor.radiation     || 0).toFixed(1);
+      const score  = (anomaly.weighted_score || 0).toFixed(2);
+      const models = (anomaly.triggered_models || []).map(modelShort).join(' + ');
+      const rootCause = rootCauseText(anomaly.triggered_models);
+
+      const div = document.createElement('div');
+      div.className = 'alert-card';
+      div.innerHTML =
+        '<div class="alert-header">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━<br>' +
+        '⚠  ANOMALY SIGNAL RECEIVED</div>' +
+        '<span class="label-key">TRANSMISSION TS : </span><span class="label-val">' + fmtDate(recvTs) + '</span><br>' +
+        '<span class="label-key">ORIGIN TS       : </span><span class="label-val">' + fmtDate(originDate) + '</span><br>' +
+        '<span class="label-key">DELAY           : </span><span class="label-val" style="color:var(--amber)">18.4s</span><br>' +
+        '<div class="alert-divider">──────────────────────────────────────────────</div>' +
+        '<span class="label-key">TEMP     : </span><span class="label-val">' + temp + ' °C&nbsp;&nbsp;&nbsp;&nbsp;</span>' + tempTag(parseFloat(temp)) + '<br>' +
+        '<span class="label-key">METHANE  : </span><span class="label-val">' + meth + ' ppb&nbsp;&nbsp;</span>' + methTag(parseFloat(meth)) + '<br>' +
+        '<span class="label-key">RAD      : </span><span class="label-val">' + rad  + ' μSv/h&nbsp;</span>' + radTag(parseFloat(rad)) + '<br>' +
+        '<div class="alert-divider">──────────────────────────────────────────────</div>' +
+        '<span class="label-key">MODELS TRIGGERED : </span><span class="models-line">' + (models || '—') + '</span><br>' +
+        '<span class="label-key">WEIGHTED SCORE   : </span><span class="label-val">' + score + '</span><br>' +
+        '<span class="label-key">ROOT CAUSE       : </span><span class="rootcause">' + rootCause + '</span><br>' +
+        '<div class="alert-header" style="margin-top:4px">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</div>';
+
+      // Prepend newest at top
+      if ($awaitingLine && $awaitingLine.parentNode === $signalFeed) {
+        $signalFeed.insertBefore(div, $awaitingLine.nextSibling);
+      } else {
+        $signalFeed.insertBefore(div, $signalFeed.firstChild);
+      }
+
+      // Trim to MAX_ALERTS
+      const cards = $signalFeed.querySelectorAll('.alert-card');
+      if (cards.length > MAX_ALERTS) {
+        cards[cards.length - 1].remove();
+      }
+
+      // Scroll to top
+      $signalFeed.scrollTop = 0;
+      resetAwaitTimer();
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       TIMELINE CHART
+       ══════════════════════════════════════════════════════════════════════ */
+    const ctx = document.getElementById('timeline-chart').getContext('2d');
+    const timelineChart = new Chart(ctx, {
+      type: 'scatter',
+      data: {
+        datasets: [{
+          data: [],
+          pointBackgroundColor: [],
+          pointBorderColor: [],
+          pointRadius: [],
+          pointHoverRadius: [],
+          showLine: true,
+          borderColor: 'rgba(0,119,255,0.2)',
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                const pt = ctx.raw;
+                return pt.info || ('Score: ' + (pt.y || 0).toFixed(2));
+              }
+            },
+            backgroundColor: '#0d1420',
+            borderColor: 'rgba(0,119,255,0.4)',
+            borderWidth: 1,
+            titleColor: '#e8f4ff',
+            bodyColor: '#c8d8e8',
+            titleFont: { family: "'Share Tech Mono', monospace", size: 10 },
+            bodyFont:  { family: "'Share Tech Mono', monospace", size: 10 }
+          }
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            min: function () { return Date.now() - 5 * 60 * 1000; },
+            max: function () { return Date.now(); },
+            ticks: { display: false },
+            grid: { color: 'rgba(255,255,255,0.04)' },
+            border: { color: 'rgba(0,119,255,0.3)' }
+          },
+          y: {
+            min: 0,
+            max: 1,
+            ticks: {
+              color: '#5a7a8a',
+              font: { family: "'Share Tech Mono', monospace", size: 9 },
+              stepSize: 0.25
+            },
+            grid: { color: 'rgba(255,255,255,0.04)' },
+            border: { color: 'rgba(0,119,255,0.3)' }
+          }
+        }
+      }
+    });
+
+    function pushTimelinePoint(score, infoStr) {
+      const now = Date.now();
+      const size = 4 + Math.round(score * 12);   // 4–16px based on severity
+      // Thresholds aligned with stats: > 0.8 = critical/red, > 0.5 = elevated/amber
+      const color = score > 0.8 ? '#ff3b3b' : score > 0.5 ? '#ffb800' : '#00dc82';
+
+      timelinePoints.push({ x: now, y: score, info: infoStr });
+      if (timelinePoints.length > MAX_TIMELINE) timelinePoints.shift();
+
+      timelineChart.data.datasets[0].data = timelinePoints;
+      timelineChart.data.datasets[0].pointBackgroundColor = timelinePoints.map(function (p) {
+        return p.y > 0.8 ? '#ff3b3b' : p.y > 0.5 ? '#ffb800' : '#00dc82';
+      });
+      timelineChart.data.datasets[0].pointRadius  = timelinePoints.map(function (p) { return 4 + Math.round(p.y * 12); });
+      timelineChart.data.datasets[0].pointHoverRadius = timelinePoints.map(function (p) { return 6 + Math.round(p.y * 14); });
+
+      const fiveMinAgo = now - 5 * 60 * 1000;
+      timelineChart.options.scales.x.min = fiveMinAgo;
+      timelineChart.options.scales.x.max = now;
+      timelineChart.update('none');
+    }
+
+    // Refresh timeline x-axis every 10s so window scrolls forward
+    setInterval(function () {
+      const now = Date.now();
+      timelineChart.options.scales.x.min = now - 5 * 60 * 1000;
+      timelineChart.options.scales.x.max = now;
+      timelineChart.update('none');
+    }, 10000);
+
+    /* ══════════════════════════════════════════════════════════════════════
+       STATS UPDATE
+       ══════════════════════════════════════════════════════════════════════ */
+    function updateStats(payload) {
+      const sensor  = payload.sensor  || {};
+      const anomaly = payload.anomaly || {};
+      const score   = anomaly.weighted_score || 0;
+      const models  = anomaly.triggered_models || [];
+      const temp    = sensor.temperature   || 0;
+      const rad     = sensor.radiation     || 0;
+      const meth    = sensor.methane_level || 0;
+
+      stats.total++;
+      stats.scoreSum += score;
+      // Normalize to 2dp to eliminate floating-point drift (e.g. 0.8000000000001 > 0.8 = wrongly critical)
+      const scoreClamped = parseFloat(score.toFixed(2));
+      if (scoreClamped > 0.8)       stats.critical++;
+      else if (scoreClamped > 0.5)  stats.elevated++;
+
+      models.forEach(function (m) {
+        stats.modelCounts[m] = (stats.modelCounts[m] || 0) + 1;
+      });
+
+      if (stats.peakTemp  === null || temp > stats.peakTemp)  stats.peakTemp  = temp;
+      if (stats.peakRad   === null || rad  > stats.peakRad)   stats.peakRad   = rad;
+      if (stats.peakMeth  === null || meth > stats.peakMeth)  stats.peakMeth  = meth;
+
+      // Most triggered model
+      let topModel = '—';
+      let topCount = 0;
+      Object.keys(stats.modelCounts).forEach(function (k) {
+        if (stats.modelCounts[k] > topCount) { topCount = stats.modelCounts[k]; topModel = k; }
+      });
+
+      document.getElementById('st-total').textContent    = stats.total;
+      document.getElementById('st-critical').textContent = stats.critical;
+      document.getElementById('st-elevated').textContent = stats.elevated;
+      document.getElementById('st-top-model').textContent = modelShort(topModel);
+      document.getElementById('st-avg-score').textContent = (stats.scoreSum / stats.total).toFixed(3);
+      document.getElementById('st-peak-temp').textContent = stats.peakTemp.toFixed(1) + ' °C';
+      document.getElementById('st-peak-rad').textContent  = stats.peakRad.toFixed(1)  + ' μSv/h';
+      document.getElementById('st-peak-meth').textContent = stats.peakMeth.toFixed(2) + ' ppb';
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       SEVERITY GAUGE
+       ══════════════════════════════════════════════════════════════════════ */
+    function pushGaugeBar(score) {
+      gaugeScores.unshift(score);
+      if (gaugeScores.length > MAX_GAUGE) gaugeScores.pop();
+      renderGauge();
+    }
+
+    function renderGauge() {
+      const $gb = document.getElementById('gauge-bars');
+      $gb.innerHTML = '';
+      gaugeScores.forEach(function (score, i) {
+        const opacity = 1 - i * (0.65 / Math.max(gaugeScores.length - 1, 1));
+        // Aligned with stats: > 0.8 = critical/red, > 0.5 = elevated/amber
+        const cls = score > 0.8 ? 'high' : score > 0.5 ? 'mid' : 'low';
+        const pct = (score * 100).toFixed(0);
+
+        const wrap = document.createElement('div');
+        wrap.className = 'gauge-bar-wrap';
+        wrap.style.opacity = opacity.toFixed(2);
+
+        const outer = document.createElement('div');
+        outer.className = 'gauge-bar-outer';
+
+        const inner = document.createElement('div');
+        inner.className = 'gauge-bar-inner ' + cls;
+        inner.style.width = pct + '%';
+
+        const label = document.createElement('div');
+        label.className = 'gauge-score';
+        label.textContent = score.toFixed(2);
+
+        outer.appendChild(inner);
+        wrap.appendChild(outer);
+        wrap.appendChild(label);
+        $gb.appendChild(wrap);
+      });
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       MAIN ALERT PROCESSOR (called after delay)
+       ══════════════════════════════════════════════════════════════════════ */
+    function processAlert(payload) {
+      lastSignalTime = Date.now();
+      const score = (payload.anomaly && payload.anomaly.weighted_score) || 0;
+      const temp  = (payload.sensor  && payload.sensor.temperature)    || 0;
+      const meth  = (payload.sensor  && payload.sensor.methane_level)  || 0;
+      const models = (payload.anomaly && payload.anomaly.triggered_models || []).map(modelShort);
+      const infoStr = 'T=' + temp.toFixed(1) + '°C · score=' + score.toFixed(2) + ' · ' + models.join('+');
+
+      renderAlert(payload);
+      updateStats(payload);
+      pushTimelinePoint(score, infoStr);
+      pushGaugeBar(score);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       DSN STATION STATUS (fake, drifting)
+       ══════════════════════════════════════════════════════════════════════ */
+    let dsnUptime = 14 * 3600 + 22 * 60 + 1;
+    const DSN_STATIONS = ['DSN-26 GOLDSTONE', 'DSN-43 CANBERRA', 'DSN-63 MADRID'];
+    const ANTENNAS     = ['34m BWG DISH', '70m DISH', '34m HEF DISH'];
+    let dsnStation = 0;
+
+    function dsnRand(base, range) {
+      return (base + (Math.random() - 0.5) * range).toFixed(1);
+    }
+
+    function renderDSN() {
+      dsnUptime++;
+      const h = String(Math.floor(dsnUptime / 3600)).padStart(2, '0');
+      const m = String(Math.floor((dsnUptime % 3600) / 60)).padStart(2, '0');
+      const s = String(dsnUptime % 60).padStart(2, '0');
+
+      const sigDb  = dsnRand(-142.3, 0.6);
+      const bitRate = (1.8 + Math.random() * 0.4).toFixed(1);
+      const lastAck = (0.1 + Math.random() * 0.5).toFixed(1);
+
+      const pad = function (k, v, w) {
+        return '  <span class="key">' + k + '</span>' +
+               ' '.repeat(Math.max(1, w - k.length)) +
+               ': <span class="val">' + v + '</span>';
+      };
+
+      document.getElementById('dsn-output').innerHTML =
+        '<span class="head">[DSN_STATION_STATUS]</span>\n' +
+        pad('STATION',   DSN_STATIONS[dsnStation], 11) + '\n' +
+        pad('ANTENNA',   ANTENNAS[dsnStation],     11) + '\n' +
+        pad('FREQ_BAND', 'X-BAND (8.4 GHz)',       11) + '\n' +
+        pad('SIGNAL_DB', sigDb + ' dBm',           11) + '\n' +
+        pad('BIT_RATE',  bitRate + ' kbps',         11) + '\n' +
+        pad('UPTIME',    h + ':' + m + ':' + s,    11) + '\n' +
+        pad('LAST_ACK',  lastAck + 's ago',         11);
+    }
+
+    renderDSN();
+    setInterval(renderDSN, 1000);   // uptime ticks every second
+    setInterval(function () {       // station drifts every 8s
+      if (Math.random() < 0.1) dsnStation = (dsnStation + 1) % DSN_STATIONS.length;
+    }, 8000);
+
+    /* ══════════════════════════════════════════════════════════════════════
+       SIMULATION MODE
+       ══════════════════════════════════════════════════════════════════════ */
+    function randBetween(a, b) { return a + Math.random() * (b - a); }
+
+    function generateSimAnomaly() {
+      const allModels = ['isolation_forest', 'lof', 'zscore'];
+      const modelCount = 1 + Math.floor(Math.random() * 3);
+      const shuffled = allModels.slice().sort(function () { return Math.random() - 0.5; });
+      const triggered = shuffled.slice(0, modelCount);
+      const score = randBetween(0.52, 0.95);
+
+      return {
+        sensor: {
+          temperature:   randBetween(45, 95),
+          methane_level: randBetween(1.5, 3.0),
+          radiation:     randBetween(450, 900)
+        },
+        anomaly: {
+          is_anomaly:       true,
+          confidence:       score,
+          weighted_score:   score,
+          triggered_models: triggered
+        },
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    function scheduleNextSim() {
+      const delay = 15000 + Math.random() * 10000; // 15–25s
+      simTimer = setTimeout(function () {
+        if (!mqttConnected) {
+          const payload = generateSimAnomaly();
+          showIncomingProgress();
+          setTimeout(function () { processAlert(payload); }, TRANSMISSION_DELAY_MS);
+          scheduleNextSim();
+        }
+      }, delay);
+    }
+
+    function startSimMode() {
+      $connDot.className = 'simulated';
+      $connLabel.textContent = 'SIMULATED MODE';
+      $connLabel.className = 'simulated';
+      scheduleNextSim();
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       MQTT
+       ══════════════════════════════════════════════════════════════════════ */
+    let mqttClient = null;
+
+    function connectMQTT() {
+      try {
+        mqttClient = mqtt.connect(MQTT_BROKER, {
+          clientId: 'earth_dash_' + Date.now(),
+          connectTimeout: 5000,
+          reconnectPeriod: 3000
+        });
+
+        mqttClient.on('connect', function () {
+          mqttConnected = true;
+          clearTimeout(simTimer);
+          $connDot.className    = 'connected';
+          $connLabel.textContent = 'CONNECTED';
+          $connLabel.className   = 'connected';
+          mqttClient.subscribe(MQTT_TOPIC);
+        });
+
+        mqttClient.on('message', function (topic, message) {
+          try {
+            const payload = JSON.parse(message.toString());
+            // Only process if it's an actual anomaly
+            if (!payload.anomaly || !payload.anomaly.is_anomaly) return;
+            showIncomingProgress();
+            setTimeout(function () { processAlert(payload); }, TRANSMISSION_DELAY_MS);
+          } catch (e) {
+            console.warn('[earth_dash] bad payload', e);
+          }
+        });
+
+        mqttClient.on('error', function (err) {
+          console.warn('[earth_dash] MQTT error', err);
+        });
+
+        mqttClient.on('offline', function () {
+          if (!mqttConnected) return;
+          mqttConnected = false;
+          $connDot.className    = 'simulated';
+          $connLabel.textContent = 'DISCONNECTED';
+          $connLabel.className   = 'simulated';
+          startSimMode();
+        });
+
+        // If not connected after 6s, fall back to sim
+        setTimeout(function () {
+          if (!mqttConnected) startSimMode();
+        }, 6000);
+
+      } catch (e) {
+        console.warn('[earth_dash] MQTT init failed', e);
+        startSimMode();
+      }
+    }
+
+    // Check if mqtt lib loaded
+    if (typeof mqtt !== 'undefined') {
+      connectMQTT();
+    } else {
+      console.warn('[earth_dash] mqtt.min.js not loaded — simulation only');
+      startSimMode();
+    }
+
+    // Initial awaiting line stays visible until first real data
+    resetAwaitTimer();
+
+  })();
+  </script>
+</body>
+</html>
