@@ -1,0 +1,51 @@
+# === Go ===
+edge-core-go/edge-core-go
+*.exe
+*.out
+*.test
+vendor/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+anomaly-ml-python/models/*.joblib
+
+# === Unity ===
+unity-dashboard/Library/
+unity-dashboard/Temp/
+unity-dashboard/Obj/
+unity-dashboard/Build/
+unity-dashboard/Builds/
+unity-dashboard/Logs/
+unity-dashboard/UserSettings/
+unity-dashboard/MemoryCaptures/
+unity-dashboard/[Aa]ssets/AssetStoreTools*
+*.csproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.unityproj
+
+# === Docker ===
+mosquitto/data/
+mosquitto/log/
+
+# === IDE / OS ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
