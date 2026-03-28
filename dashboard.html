@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MARS ROVER — MISSION CONTROL</title>
+  <meta name="description"
+    content="Mars Rover Edge Computing Mission Control Dashboard — Real-time telemetry, anomaly detection, and rover diagnostics.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <script src="chart.min.js"></script>
+  <script src="mqtt.min.js"></script>
+  <style>
+    /* ══════════════════════════════════════════════════════════════════════
+   RESET & BASE
+   ══════════════════════════════════════════════════════════════════════ */
+    *,
+    *::before,
+    *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg: #000000;
+      --panel-bg: #0a0a0a;
+      --border: #333333;
+      --text: #cccccc;
+      --text-dim: #666666;
+      --text-bright: #ffffff;
+      --red: #ff1a1a;
+      --red-dim: #661111;
+      --green: #33ff33;
+      --amber: #ffaa00;
+      --pill-normal: #3a7bd5;
+      --pill-anomaly: #ff1a1a;
+      --font: 'Share Tech Mono', monospace;
+      --scanline-opacity: 0.04;
+    }
+
+    html,
+    body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.4;
+      overflow: hidden;
+    }
+
+    /* ── CRT scanline overlay ─────────────────────────────────────────── */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9999;
+      background: repeating-linear-gradient(0deg,
+          transparent,
+          transparent 2px,
+          rgba(0, 0, 0, var(--scanline-opacity)) 2px,
+          rgba(0, 0, 0, var(--scanline-opacity)) 4px);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+   TOP BAR
+   ══════════════════════════════════════════════════════════════════════ */
+    #topbar {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-bg);
+      height: 40px;
+      position: relative;
+    }
+
+    #conn-status {
+      position: absolute;
+      right: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      letter-spacing: 1px;
+    }
+
+    #topbar h1 {
+      font-size: 14px;
+      letter-spacing: 3px;
+      color: var(--text-bright);
+      font-weight: 400;
+    }
+
+    #topbar h1 span.red {
+      color: var(--red);
+    }
+
+
+    #conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 0;
+      background: var(--red);
+    }
+
+    #conn-dot.connected {
+      background: var(--green);
+    }
+
+    #conn-dot.simulated {
+      background: var(--amber);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+   MAIN LAYOUT
+   ══════════════════════════════════════════════════════════════════════ */
+    #main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      height: calc(100vh - 40px);
+    }
+
+    .col {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .col-left {
+      border-right: 1px solid var(--border);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+   PANEL
+   ══════════════════════════════════════════════════════════════════════ */
+    .panel {
+      border-bottom: 1px solid var(--border);
+      padding: 10px 14px;
+      background: var(--panel-bg);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .panel-title {
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+
+    .panel-title::before {
+      content: '▸ ';
+      color: var(--red);
+    }
+
+    /* ── Anomaly Matrix ───────────────────────────────────────────────── */
+    #matrix-panel {
+      flex: 1 1 0;
+      min-height: 0;
+    }
+
+    #matrix-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow: hidden;
+    }
+
+    .matrix-row {
+      display: flex;
+      gap: 4px;
+      justify-content: flex-start;
+      animation: rowSlideIn 0.3s ease-out;
+    }
+
+    @keyframes rowSlideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-12px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .matrix-pill {
+      width: 32px;
+      height: 16px;
+      border-radius: 5px;
+      background: var(--pill-normal);
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .matrix-pill.anomaly {
+      background: var(--pill-anomaly);
+      box-shadow: 0 0 6px var(--red);
+    }
+
+    /* ── Charts  ───────────────────────────────────────────────────────── */
+    #methane-panel {
+      flex: 1 1 0;
+      min-height: 180px;
+    }
+
+    #temp-panel {
+      flex: 1 1 0;
+      min-height: 180px;
+    }
+
+    .chart-wrap {
+      width: 100%;
+      height: calc(100% - 24px);
+      position: relative;
+    }
+
+    /* ── Right column panels ──────────────────────────────────────────── */
+    #averages-panel {
+      flex: 0 0 auto;
+    }
+
+    .avg-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+    }
+
+    .avg-item {
+      border: 1px solid var(--border);
+      padding: 10px;
+      text-align: center;
+    }
+
+    .avg-label {
+      font-size: 9px;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+
+    .avg-value {
+      font-size: 22px;
+      color: var(--text-bright);
+    }
+
+    .avg-unit {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-left: 2px;
+    }
+
+    /* ── Diagnostics ──────────────────────────────────────────────────── */
+    #diag-panel {
+      flex: 0 0 auto;
+    }
+
+    #diag-output {
+      white-space: pre;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    #diag-output .label {
+      color: var(--text-dim);
+    }
+
+    #diag-output .val {
+      color: var(--text-bright);
+    }
+
+    #diag-output .header {
+      color: var(--amber);
+    }
+
+    /* ── Terminal ─────────────────────────────────────────────────────── */
+    #terminal-panel {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    #terminal-body {
+      flex: 1 1 0;
+      overflow-y: auto;
+      font-size: 11px;
+      line-height: 1.6;
+      padding-top: 4px;
+      min-height: 0;
+    }
+
+    #terminal-body::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #terminal-body::-webkit-scrollbar-track {
+      background: var(--panel-bg);
+    }
+
+    #terminal-body::-webkit-scrollbar-thumb {
+      background: var(--border);
+    }
+
+    .term-line {
+      word-break: break-all;
+    }
+
+    .term-line .ts {
+      color: var(--text-dim);
+    }
+
+    .term-line .tag {
+      color: var(--red);
+      font-weight: 400;
+    }
+
+    .term-line .tag.info {
+      color: var(--green);
+    }
+
+    .term-line .msg {
+      color: var(--text);
+    }
+
+    #terminal-prompt {
+      padding-top: 4px;
+      border-top: 1px solid #1a1a1a;
+      height: 22px;
+      color: var(--green);
+      font-size: 12px;
+    }
+
+    #terminal-prompt .cursor {
+      animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+   SCROLLBAR GLOBAL
+   ══════════════════════════════════════════════════════════════════════ */
+    ::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #0a0a0a;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #333;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+   UTILITY
+   ══════════════════════════════════════════════════════════════════════ */
+    .flicker {
+      animation: flicker 0.15s;
+    }
+
+    @keyframes flicker {
+      0% {
+        opacity: 1;
+      }
+
+      25% {
+        opacity: 0.6;
+      }
+
+      50% {
+        opacity: 1;
+      }
+
+      75% {
+        opacity: 0.8;
+      }
+
+      100% {
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+     TOP BAR
+     ═══════════════════════════════════════════════════════════════════ -->
+  <header id="topbar">
+    <h1>▌ MARS ROVER — <span class="red">MISSION CONTROL</span> ▐</h1>
+    <div id="conn-status">
+      <span id="conn-label">DISCONNECTED</span>
+      <div id="conn-dot"></div>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+     MAIN 2-COLUMN
+     ═══════════════════════════════════════════════════════════════════ -->
+  <div id="main">
+
+    <!-- LEFT COLUMN ──────────────────────────────────────────────────── -->
+    <div class="col col-left">
+
+      <div class="panel" id="matrix-panel">
+        <div class="panel-title">ANOMALY LOG MATRIX</div>
+        <div id="matrix-grid"></div>
+      </div>
+
+      <div class="panel" id="methane-panel">
+        <div class="panel-title">METHANE GAS LEVEL (PPM)</div>
+        <div class="chart-wrap"><canvas id="methane-chart"></canvas></div>
+      </div>
+
+      <div class="panel" id="temp-panel">
+        <div class="panel-title">SURFACE TEMPERATURE (°C)</div>
+        <div class="chart-wrap"><canvas id="temp-chart"></canvas></div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT COLUMN ─────────────────────────────────────────────────── -->
+    <div class="col col-right">
+
+      <div class="panel" id="averages-panel">
+        <div class="panel-title">AVERAGE VALUES (ROLLING 30s)</div>
+        <div class="avg-grid">
+          <div class="avg-item">
+            <div class="avg-label">METHANE</div>
+            <div class="avg-value" id="avg-methane">0.000<span class="avg-unit">ppm</span></div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-label">TEMPERATURE</div>
+            <div class="avg-value" id="avg-temp">0.0<span class="avg-unit">°C</span></div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-label">RADIATION</div>
+            <div class="avg-value" id="avg-rad">0.0<span class="avg-unit">μSv</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="diag-panel">
+        <div class="panel-title">ROVER DIAGNOSTICS</div>
+        <div id="diag-output"></div>
+      </div>
+
+      <div class="panel" id="terminal-panel">
+        <div class="panel-title">EVENT LOG</div>
+        <div id="terminal-body"></div>
+        <div id="terminal-prompt">&gt; <span class="cursor">█</span></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+     JAVASCRIPT
+     ═══════════════════════════════════════════════════════════════════ -->
+  <script>
+    (function () {
+      'use strict';
+
+      /* ══════════════════════════════════════════════════════════════════════
+         CONSTANTS
+         ══════════════════════════════════════════════════════════════════════ */
+      const MATRIX_COLS = 12;
+      const MATRIX_ROWS = 10;
+      const CHART_MAX_POINTS = 60;
+      const MQTT_BROKER = 'ws://localhost:9001';
+      const MQTT_TOPIC = 'rover/telemetry';
+      const SIM_INTERVAL = 1000;          // ms between simulated readings
+      const DIAG_INTERVAL = 5000;         // ms between diagnostic drifts
+      const METHANE_THRESHOLD = 0.1;      // dashed line
+      const TEMP_THRESHOLD = 50;          // dashed line
+
+      /* ══════════════════════════════════════════════════════════════════════
+         STATE
+         ══════════════════════════════════════════════════════════════════════ */
+      let mqttConnected = false;
+      let simTimer = null;
+      let simCounter = 0;
+      const matrixRows = [];              // array of arrays of booleans
+      const avgBuffer = [];               // last N sensor readings
+      const MAX_AVG = 30;
+
+      /* ══════════════════════════════════════════════════════════════════════
+         DOM REFS
+         ══════════════════════════════════════════════════════════════════════ */
+      const $connDot = document.getElementById('conn-dot');
+      const $connLabel = document.getElementById('conn-label');
+      const $matrixGrid = document.getElementById('matrix-grid');
+      const $diagOutput = document.getElementById('diag-output');
+      const $termBody = document.getElementById('terminal-body');
+      const $avgMethane = document.getElementById('avg-methane');
+      const $avgTemp = document.getElementById('avg-temp');
+      const $avgRad = document.getElementById('avg-rad');
+
+      /* ══════════════════════════════════════════════════════════════════════
+         CHART SETUP
+         ══════════════════════════════════════════════════════════════════════ */
+      const chartFont = { family: "'Share Tech Mono', monospace" };
+
+      function makeChartConfig(thresholdValue, yLabel) {
+        return {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [
+              {
+                label: 'value',
+                data: [],
+                borderColor: [],
+                pointBackgroundColor: [],
+                pointRadius: [],
+                pointStyle: [],
+                borderWidth: 1.5,
+                tension: 0,
+                fill: false,
+                segment: {
+                  borderColor: function (ctx) {
+                    const i = ctx.p1DataIndex;
+                    return ctx.chart.data.datasets[0]._anomalyFlags &&
+                      ctx.chart.data.datasets[0]._anomalyFlags[i]
+                      ? '#ff1a1a' : '#cccccc';
+                  }
+                }
+              },
+              {
+                label: 'threshold',
+                data: [],
+                borderColor: '#ff1a1a55',
+                borderDash: [6, 4],
+                borderWidth: 1,
+                pointRadius: 0,
+                fill: false,
+                tension: 0,
+              }
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 200 },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                titleFont: chartFont,
+                bodyFont: chartFont,
+                backgroundColor: '#111',
+                borderColor: '#333',
+                borderWidth: 1,
+              },
+            },
+            scales: {
+              x: {
+                display: true,
+                ticks: { display: false },
+                grid: { color: '#1a1a1a', drawTicks: false },
+                border: { color: '#333' },
+              },
+              y: {
+                display: true,
+                ticks: { color: '#555', font: { size: 10, ...chartFont } },
+                grid: { color: '#1a1a1a' },
+                border: { color: '#333' },
+                title: { display: false },
+              },
+            },
+            layout: { padding: { top: 4, right: 4, bottom: 0, left: 0 } },
+          },
+        };
+      }
+
+      const methaneChart = new Chart(
+        document.getElementById('methane-chart'),
+        makeChartConfig(METHANE_THRESHOLD, 'ppm')
+      );
+      methaneChart.data.datasets[0]._anomalyFlags = [];
+
+      const tempChart = new Chart(
+        document.getElementById('temp-chart'),
+        makeChartConfig(TEMP_THRESHOLD, '°C')
+      );
+      tempChart.data.datasets[0]._anomalyFlags = [];
+
+      /* ══════════════════════════════════════════════════════════════════════
+         CHART UPDATE
+         ══════════════════════════════════════════════════════════════════════ */
+      function pushChartPoint(chart, label, value, isAnomaly, thresholdVal) {
+        const ds = chart.data.datasets[0];
+        const thr = chart.data.datasets[1];
+
+        chart.data.labels.push(label);
+        ds.data.push(value);
+        ds._anomalyFlags.push(isAnomaly);
+
+        ds.pointBackgroundColor.push(isAnomaly ? '#ff1a1a' : '#cccccc');
+        ds.pointRadius.push(isAnomaly ? 6 : 2);
+        ds.pointStyle.push(isAnomaly ? 'triangle' : 'circle');
+        ds.borderColor.push(isAnomaly ? '#ff1a1a' : '#cccccc');
+
+        thr.data.push(thresholdVal);
+
+        if (chart.data.labels.length > CHART_MAX_POINTS) {
+          chart.data.labels.shift();
+          ds.data.shift();
+          ds._anomalyFlags.shift();
+          ds.pointBackgroundColor.shift();
+          ds.pointRadius.shift();
+          ds.pointStyle.shift();
+          ds.borderColor.shift();
+          thr.data.shift();
+        }
+
+        chart.update('none');
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         ANOMALY MATRIX
+         ══════════════════════════════════════════════════════════════════════ */
+      function pushMatrixRow(flags) {
+        // flags: array of booleans (length MATRIX_COLS), true = anomaly
+        matrixRows.unshift(flags);
+        if (matrixRows.length > MATRIX_ROWS) matrixRows.pop();
+        renderMatrix();
+      }
+
+      function renderMatrix() {
+        $matrixGrid.innerHTML = '';
+        matrixRows.forEach(function (row, ri) {
+          const rowEl = document.createElement('div');
+          rowEl.className = 'matrix-row';
+          if (ri === 0) rowEl.style.animation = 'rowSlideIn 0.3s ease-out';
+          // fade older rows
+          rowEl.style.opacity = String(1 - ri * 0.07);
+
+          row.forEach(function (isAnom) {
+            const pill = document.createElement('div');
+            pill.className = 'matrix-pill' + (isAnom ? ' anomaly' : '');
+            rowEl.appendChild(pill);
+          });
+
+          $matrixGrid.appendChild(rowEl);
+        });
+      }
+
+      // Seed the matrix with empty rows
+      for (let i = 0; i < MATRIX_ROWS; i++) {
+        matrixRows.push(new Array(MATRIX_COLS).fill(false));
+      }
+      renderMatrix();
+
+      /* ══════════════════════════════════════════════════════════════════════
+         AVERAGES
+         ══════════════════════════════════════════════════════════════════════ */
+      function updateAverages(sensor) {
+        avgBuffer.push(sensor);
+        if (avgBuffer.length > MAX_AVG) avgBuffer.shift();
+
+        let m = 0, t = 0, r = 0;
+        avgBuffer.forEach(function (s) {
+          m += s.methane_level;
+          t += s.temperature;
+          r += s.radiation;
+        });
+        const n = avgBuffer.length;
+        $avgMethane.innerHTML = (m / n).toFixed(3) + '<span class="avg-unit">ppm</span>';
+        $avgTemp.innerHTML = (t / n).toFixed(1) + '<span class="avg-unit">°C</span>';
+        $avgRad.innerHTML = (r / n).toFixed(1) + '<span class="avg-unit">μSv</span>';
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         ROOT CAUSE TEXT
+         ══════════════════════════════════════════════════════════════════════ */
+      const ROOT_MAP = {
+        isolation_forest: 'Isolated outlier: value deviates from cluster',
+        lof: 'Local density anomaly: neighbors diverge',
+        zscore: 'Z-Score breach: σ > 2.5 threshold',
+      };
+
+      function rootCause(models) {
+        if (!models || models.length === 0) return '';
+        return models.map(function (m) { return ROOT_MAP[m] || m; }).join(' + ');
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         TERMINAL LOG
+         ══════════════════════════════════════════════════════════════════════ */
+      function termLog(text, tag) {
+        const line = document.createElement('div');
+        line.className = 'term-line';
+        const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const tagClass = tag === 'INFO' ? 'info' : '';
+        line.innerHTML =
+          '<span class="ts">[' + now + ']</span> ' +
+          '<span class="tag ' + tagClass + '">' + tag + '</span> ' +
+          '<span class="msg">' + escHtml(text) + '</span>';
+        $termBody.appendChild(line);
+        // keep last 200 lines
+        while ($termBody.children.length > 200) $termBody.removeChild($termBody.firstChild);
+        $termBody.scrollTop = $termBody.scrollHeight;
+      }
+
+      function escHtml(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         ROVER DIAGNOSTICS
+         ══════════════════════════════════════════════════════════════════════ */
+      let diag = {
+        coreTemp: 85.4,
+        genOutput: 112,
+        peakDraw: 200,
+        batPct: 82,
+        batV: 28.1,
+        estRuntime: 14.2,
+        wheelRpm: [44, 43, 44, 42, 43, 44],
+        cpuTemp: 38.2,
+        ramUsed: 127,
+        signalDb: -68,
+      };
+
+      function driftDiag() {
+        diag.coreTemp = clamp(diag.coreTemp + drift(0.8), 70, 95);
+        diag.genOutput = clamp(diag.genOutput + drift(3), 95, 125);
+        diag.peakDraw = clamp(diag.peakDraw + drift(5), 180, 240);
+        diag.batPct = clamp(diag.batPct + drift(1.5), 60, 100);
+        diag.batV = clamp(diag.batV + drift(0.3), 24, 30);
+        diag.estRuntime = clamp(diag.estRuntime + drift(0.5), 8, 20);
+        diag.cpuTemp = clamp(diag.cpuTemp + drift(0.6), 30, 55);
+        diag.ramUsed = clamp(diag.ramUsed + drift(4), 100, 200);
+        diag.signalDb = clamp(diag.signalDb + drift(2), -85, -50);
+        for (let i = 0; i < 6; i++) {
+          diag.wheelRpm[i] = clamp(diag.wheelRpm[i] + drift(1.5), 35, 55);
+        }
+        renderDiag();
+      }
+
+      function drift(mag) { return (Math.random() - 0.5) * 2 * mag; }
+      function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+      function batBar(pct) {
+        const filled = Math.round(pct / 10);
+        return '[' + '|'.repeat(filled) + '-'.repeat(10 - filled) + ']';
+      }
+
+      function renderDiag() {
+        const w = diag.wheelRpm.map(function (r) { return r.toFixed(0); }).join(' / ');
+        $diagOutput.innerHTML =
+          '<span class="header">[POWER_SUBSYSTEM_DIAGNOSTICS]</span>\n' +
+          '<span class="label">SOURCE     :</span> <span class="val">MMRTG (PLUTONIUM-238)</span>\n' +
+          '<span class="label">CORE_TEMP  :</span> <span class="val">' + diag.coreTemp.toFixed(1) + ' °C</span>\n' +
+          '<span class="label">GEN_OUTPUT :</span> <span class="val">' + diag.genOutput.toFixed(0) + ' W</span>\n' +
+          '<span class="label">PEAK_DRAW  :</span> <span class="val">' + diag.peakDraw.toFixed(0) + ' W (DRIVE_MOTORS)</span>\n' +
+          '<span class="label">BAT_STATUS :</span> <span class="val">' + batBar(diag.batPct) + ' ' + diag.batPct.toFixed(0) + '% (' + diag.batV.toFixed(1) + 'V)</span>\n' +
+          '<span class="label">EST_RUNTIME:</span> <span class="val">' + diag.estRuntime.toFixed(1) + ' HOURS (AT CURRENT LOAD)</span>\n' +
+          '\n' +
+          '<span class="header">[MOBILITY_SUBSYSTEM]</span>\n' +
+          '<span class="label">WHEEL_RPM  :</span> <span class="val">' + w + '</span>\n' +
+          '<span class="label">DRIVE_MODE :</span> <span class="val">AUTONOMOUS_NAV</span>\n' +
+          '\n' +
+          '<span class="header">[COMPUTE_SUBSYSTEM]</span>\n' +
+          '<span class="label">CPU_TEMP   :</span> <span class="val">' + diag.cpuTemp.toFixed(1) + ' °C</span>\n' +
+          '<span class="label">RAM_USED   :</span> <span class="val">' + diag.ramUsed.toFixed(0) + ' MB / 256 MB</span>\n' +
+          '<span class="label">SIGNAL_STR :</span> <span class="val">' + diag.signalDb.toFixed(0) + ' dBm (UHF RELAY)</span>\n' +
+          '<span class="label">UPTIME     :</span> <span class="val">' + formatUptime() + '</span>';
+      }
+
+      const bootTime = Date.now();
+      function formatUptime() {
+        const s = Math.floor((Date.now() - bootTime) / 1000);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        return pad(h) + ':' + pad(m) + ':' + pad(sec);
+      }
+      function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+      renderDiag();
+      setInterval(driftDiag, DIAG_INTERVAL);
+
+      /* ══════════════════════════════════════════════════════════════════════
+         CONNECTION STATUS UI
+         ══════════════════════════════════════════════════════════════════════ */
+      function setStatus(mode) {
+        $connDot.className = '';
+        if (mode === 'connected') {
+          $connDot.classList.add('connected');
+          $connLabel.textContent = 'CONNECTED';
+        } else if (mode === 'simulated') {
+          $connDot.classList.add('simulated');
+          $connLabel.textContent = 'SIMULATED MODE';
+        } else {
+          $connLabel.textContent = 'DISCONNECTED';
+        }
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         PROCESS INCOMING TELEMETRY
+         ══════════════════════════════════════════════════════════════════════ */
+
+      // track recent readings for matrix batching
+      let matrixBatch = [];
+
+      function processTelemetry(payload) {
+        const sensor = payload.sensor;
+        const anomaly = payload.anomaly;
+        const ts = payload.timestamp || new Date().toISOString();
+        const label = ts.substring(11, 19);
+        const isAnom = anomaly && anomaly.is_anomaly;
+
+        // ── Charts
+        pushChartPoint(methaneChart, label, sensor.methane_level, isAnom, METHANE_THRESHOLD);
+        pushChartPoint(tempChart, label, sensor.temperature, isAnom, TEMP_THRESHOLD);
+
+        // ── Averages
+        updateAverages(sensor);
+
+        // ── Matrix batch
+        matrixBatch.push(isAnom);
+        if (matrixBatch.length >= MATRIX_COLS) {
+          pushMatrixRow(matrixBatch.slice(0, MATRIX_COLS));
+          matrixBatch = matrixBatch.slice(MATRIX_COLS);
+        }
+
+        // ── Terminal log
+        if (isAnom) {
+          const models = anomaly.triggered_models || [];
+          const modelStr = models.map(function (m) {
+            return m === 'isolation_forest' ? 'IF' : m === 'lof' ? 'LOF' : 'ZSCORE';
+          }).join('+');
+          const line =
+            'TEMP=' + sensor.temperature.toFixed(1) + '°C ' +
+            'METHANE=' + sensor.methane_level.toFixed(3) + 'ppm ' +
+            'RAD=' + sensor.radiation.toFixed(1) + ' :: ' +
+            modelStr + ' :: score=' + (anomaly.weighted_score || 0).toFixed(2) +
+            ' :: ' + rootCause(models);
+          termLog(line, 'ANOMALY');
+        } else {
+          // Only log every 10th normal reading to avoid spam
+          if (Math.random() < 0.1) {
+            termLog(
+              'NOMINAL :: TEMP=' + sensor.temperature.toFixed(1) + '°C ' +
+              'METHANE=' + sensor.methane_level.toFixed(3) + 'ppm ' +
+              'RAD=' + sensor.radiation.toFixed(1),
+              'INFO'
+            );
+          }
+        }
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         MQTT CONNECTION
+         ══════════════════════════════════════════════════════════════════════ */
+      function connectMqtt() {
+        termLog('Attempting MQTT connection to ' + MQTT_BROKER + ' ...', 'INFO');
+
+        let client;
+        try {
+          client = mqtt.connect(MQTT_BROKER, {
+            reconnectPeriod: 5000,
+            connectTimeout: 4000,
+          });
+        } catch (e) {
+          termLog('MQTT library error: ' + e.message, 'ANOMALY');
+          startSimulation();
+          return;
+        }
+
+        client.on('connect', function () {
+          mqttConnected = true;
+          setStatus('connected');
+          termLog('MQTT connected — subscribing to ' + MQTT_TOPIC, 'INFO');
+          stopSimulation();
+          client.subscribe(MQTT_TOPIC);
+        });
+
+        client.on('message', function (_topic, message) {
+          try {
+            const payload = JSON.parse(message.toString());
+            processTelemetry(payload);
+          } catch (e) {
+            termLog('JSON parse error: ' + e.message, 'ANOMALY');
+          }
+        });
+
+        client.on('close', function () {
+          if (mqttConnected) {
+            mqttConnected = false;
+            termLog('MQTT connection closed — falling back to simulation', 'ANOMALY');
+            setStatus('simulated');
+            startSimulation();
+          }
+        });
+
+        client.on('error', function (err) {
+          if (!mqttConnected) {
+            termLog('MQTT unavailable (' + (err.message || 'connection refused') + ') — entering simulated mode', 'INFO');
+            setStatus('simulated');
+            startSimulation();
+
+            // close the client to prevent constant retry noise
+            try { client.end(true); } catch (_) { }
+          }
+        });
+
+        // If not connected after 5s, start simulation anyway
+        setTimeout(function () {
+          if (!mqttConnected) {
+            setStatus('simulated');
+            startSimulation();
+          }
+        }, 5000);
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         SIMULATION FALLBACK
+         ══════════════════════════════════════════════════════════════════════ */
+      function startSimulation() {
+        if (simTimer) return;
+        termLog('Simulation engine started — generating synthetic telemetry', 'INFO');
+        simTimer = setInterval(simulateTick, SIM_INTERVAL);
+      }
+
+      function stopSimulation() {
+        if (simTimer) {
+          clearInterval(simTimer);
+          simTimer = null;
+          termLog('Simulation engine stopped — live data active', 'INFO');
+        }
+      }
+
+      function simulateTick() {
+        simCounter++;
+        const isAnom = simCounter % 10 === 0 || (simCounter % 7 === 0 && Math.random() < 0.4);
+
+        let temp, methane, rad;
+        if (isAnom) {
+          temp = 55 + Math.random() * 65;        // 55-120
+          methane = 0.12 + Math.random() * 0.38;    // 0.12-0.50
+          rad = 220 + Math.random() * 280;      // 220-500
+        } else {
+          temp = -80 + Math.random() * 110;      // -80 to 30
+          methane = Math.random() * 0.05;           // 0 to 0.05
+          rad = Math.random() * 100;            // 0 to 100
+        }
+
+        const triggered = [];
+        if (isAnom) {
+          triggered.push('isolation_forest');
+          if (Math.random() > 0.3) triggered.push('lof');
+          if (Math.random() > 0.5) triggered.push('zscore');
+        }
+
+        const wScore = isAnom
+          ? 0.5 + Math.random() * 0.5
+          : Math.random() * 0.3;
+
+        const payload = {
+          sensor: {
+            temperature: Math.round(temp * 100) / 100,
+            methane_level: Math.round(methane * 10000) / 10000,
+            radiation: Math.round(rad * 100) / 100,
+          },
+          anomaly: {
+            is_anomaly: isAnom,
+            confidence: isAnom ? Math.round(wScore * 100) / 100 : Math.round(Math.random() * 30) / 100,
+            weighted_score: Math.round(wScore * 10000) / 10000,
+            triggered_models: triggered,
+          },
+          timestamp: new Date().toISOString(),
+        };
+
+        processTelemetry(payload);
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         BOOT SEQUENCE
+         ══════════════════════════════════════════════════════════════════════ */
+      function boot() {
+        termLog('MARS ROVER EDGE COMPUTING v1.0', 'INFO');
+        termLog('Initializing telemetry subsystems ...', 'INFO');
+        termLog('Chart.js ' + Chart.version + ' loaded', 'INFO');
+        termLog('Anomaly detection ensemble: IF(0.5) + LOF(0.3) + ZSCORE(0.2)', 'INFO');
+        termLog('Threshold: weighted_score > 0.5 → ANOMALY', 'INFO');
+        termLog('────────────────────────────────────────────────', 'INFO');
+
+        connectMqtt();
+      }
+
+      boot();
+
+    })();
+  </script>
+</body>
+
+</html>
