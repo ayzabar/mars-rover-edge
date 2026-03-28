@@ -63,12 +63,12 @@ func New(brokerURL string) (*Publisher, error) {
 		})
 
 	client := mqtt.NewClient(opts)
+	// Connect is non-blocking with ConnectRetry — it will keep trying in the background.
+	// This lets the pipeline start immediately even if the broker isn't up yet.
 	token := client.Connect()
-	if !token.WaitTimeout(5 * time.Second) {
-		return nil, fmt.Errorf("mqtt connect timeout")
-	}
+	token.WaitTimeout(3 * time.Second) // best-effort initial connect
 	if token.Error() != nil {
-		return nil, fmt.Errorf("mqtt connect: %w", token.Error())
+		log.Printf("[MQTT] initial connect failed (%v), will keep retrying in background", token.Error())
 	}
 
 	return &Publisher{

@@ -23,11 +23,9 @@ func main() {
 	// --- MQTT Publisher ---
 	pub, err := mqttpub.New(mqttBroker)
 	if err != nil {
-		log.Printf("[MAIN] MQTT broker not available (%v), will retry on reconnect", err)
+		log.Fatalf("[MAIN] MQTT publisher init failed: %v", err)
 	}
-	if pub != nil {
-		defer pub.Close()
-	}
+	defer pub.Close()
 
 	// --- HTTP Client for Python ML server ---
 	mlClient := httpclient.New(mlEndpoint)
@@ -61,10 +59,8 @@ func main() {
 			}
 
 			// 3. Publish to MQTT
-			if pub != nil {
-				if err := pub.Publish(data, result); err != nil {
-					log.Printf("[MQTT] publish failed: %v", err)
-				}
+			if err := pub.Publish(data, result); err != nil {
+				log.Printf("[MQTT] publish failed: %v", err)
 			}
 		}
 	}()
