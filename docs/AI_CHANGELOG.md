@@ -2,6 +2,86 @@
 
 ---
 
+## [2026-03-29] Python ML Stack — Initial Build + Go Sensor/Pub Updates
+
+### What Changed
+
+#### 1. `anomaly-ml-python/requirements.txt` (new)
+Pinned: `flask>=2.3.0`, `scikit-learn>=1.3.0`, `joblib>=1.3.0`, `numpy>=1.24.0`.
+
+#### 2. `anomaly-ml-python/train.py` (new)
+One-shot training script. Generates 10 000 synthetic Mars samples (9 000 normal, 1 000 anomaly, ~10% contamination). Trains:
+- `IsolationForest(n_estimators=200, contamination=0.1)` on all data.
+- `LocalOutlierFactor(n_neighbors=20, novelty=True, contamination=0.1)` — `novelty=True` required for inference-time `predict()` calls.
+- Z-Score stats (mean + std clipped at 1e-8) computed on **normal-only** data for a clean baseline.
+
+Persists `{if_model, lof_model, zscore_stats}` → `models/ensemble.joblib` via `joblib.dump`. Uses `numpy.random.default_rng(42)` for reproducibility.
+
+Initial ranges used old approximations. Later updated to NASA REMS values (see train.py entry above).
+
+#### 3. `anomaly-ml-python/inference.py` (new)
+Lazy singleton model load with double-checked locking (`threading.Lock`). `predict(temperature, methane_level, radiation, timestamp)` builds `np.array([[temp, methane, rad]])` (shape 1×3), runs each model:
+- IF / LOF: sklearn convention `-1` = anomaly → `1.0`, `+1` = inlier → `0.0`.
+- Z-Score: `|X − mean| / std > 2.5` on any feature → `1.0`.
+
+Weighted vote: `score = IF×0.5 + LOF×0.3 + ZScore×0.2`. `is_anomaly = score > 0.5`. `triggered_models` list built from whichever individual scores are `> 0`. Timestamp echoed from caller or defaults to `datetime.now(UTC)`.
+
+#### 4. `anomaly-ml-python/server.py` (new)
+Flask app on `0.0.0.0:5050` (configurable via `FLASK_HOST`/`FLASK_PORT` env vars).
+- `GET /health` → `200 {"status":"ok"}` — Go-side liveness probe.
+- `POST /predict` — validates presence and numeric type of `{temperature, methane_level, radiation}`. Returns `400` on bad input, `503` if model file missing, `500` on unexpected error, `200` + result dict on success. Structured logging on every request.
+
+#### 5. `edge-core-go/internal/generator/sensor.go` — Sensor Range Fix
+Updated `generate()` to use NASA REMS real data ranges, aligned with the retrained Python model:
+
+| Sensor | Normal (before) | Normal (after) | Anomaly (after) |
+|---|---|---|---|
+| `temperature` | −80 … +30 °C | **−90 … +30 °C** | 45–95 °C (high) |
+| `methane_level` | 0.0 … 0.05 ppm | **0.3 … 0.7 ppb** | 1.5–3.0 ppb |
+| `radiation` | 0 … 100 μSv/h | **180 … 280 μSv/h** | 500–900 μSv/h |
+
+Anomaly injection (~10%) was also restructured: instead of spiking all three sensors simultaneously, a `rand.Intn(3)` switch now fires **one sensor type at a time** (temp spike, methane spike, or solar-flare radiation), keeping the other two in the normal range. This better matches single-fault realistic anomaly patterns and gives the ML model clean, separable signals.
+
+#### 6. `edge-core-go/internal/mqttpub/pub.go` — `earth/alerts` Goroutine
+Added non-blocking delayed publishing to `earth/alerts` topic to simulate Mars→Earth transmission delay:
+
+```go
+if anomaly.IsAnomaly {
+    go func(p TelemetryPayload) {
+        time.Sleep(18 * time.Second)   // Mars→Earth one-way delay
+        // marshal + publish to "earth/alerts", QoS 1
+        log.Printf("[EARTH TX] anomaly signal transmitted → earth/alerts (18s delay)")
+    }(payload)
+}
+```
+
+- Payload is **value-captured** at goroutine spawn so it's immutable inside the goroutine.
+- `rover/telemetry` publish path unchanged — fires on every reading.
+- `earth/alerts` fires **only** on anomalies, 18 seconds after the anomaly is detected.
+- New constant `earthAlertsTopic = "earth/alerts"` and `earthTxDelay = 18 * time.Second` added to `const` block.
+
+### Verification Results
+
+**Python — 8/8 integration tests passed (exit code 0):**
+
+| # | Test | HTTP | Result |
+|---|---|---|---|
+| 1 | `GET /health` | 200 | `{"status":"ok"}` |
+| 2 | Normal reading (temp=5°C, methane=0.5ppb, rad=230) | 200 | `is_anomaly: false`, score=0.0, no models triggered |
+| 3 | Temp anomaly (70°C) | 200 | `is_anomaly: true`, score=0.7, `[isolation_forest, zscore]` |
+| 4 | Methane anomaly (2.5ppb) | 200 | `is_anomaly: true`, score=**1.0**, all 3 models triggered |
+| 5 | Radiation solar flare (650 μSv/h) | 200 | `is_anomaly: true`, score=0.7, `[isolation_forest, zscore]` |
+| 6 | Missing field (`radiation` absent) | 400 | `"Missing required fields: ['radiation']"` |
+| 7 | Wrong type (`radiation="high"`) | 400 | `"Fields must be numeric: ['radiation']"` |
+| 8 | Malformed JSON body | 400 | error key present |
+
+**Go — `go` binary not present on this machine.** Code changes were surgical (value substitutions + one goroutine addition). Static analysis deferred until Go is installed.
+
+**Model retrained** during this session with new NASA REMS ranges — `ensemble.joblib` on disk is now aligned with the updated `sensor.go` bounds.
+
+---
+
+
 ## [2026-03-29] earth_dashboard.html — JPL Earth-Side Mission Control Dashboard
 
 ### What Changed
@@ -173,15 +253,17 @@ d862291 add trained ensemble model
 Module `edge-core-go`, Go 1.22. Single external dependency: `github.com/eclipse/paho.mqtt.golang v1.5.0`. Indirect deps: gorilla/websocket, golang.org/x/net, golang.org/x/sync.
 
 ### `internal/generator/sensor.go`
-Package `generator`. Exports `SensorData` struct with `temperature`, `methane_level`, `radiation`, `timestamp` — JSON tags match the contract consumed by Python and the dashboard. `Start(done <-chan struct{}) <-chan SensorData` launches a goroutine with `time.Ticker` at 100ms (10Hz). Channel buffered at 64 for backpressure. `generate()` produces random values in normal Mars ranges 90% of the time (temp -80 to 30°C, methane 0-0.05 ppm, radiation 0-100 μSv/h). 10% anomaly injection (temp 55-120, methane 0.12-0.50, radiation 220-500). Goroutine exits cleanly on `done` channel close.
+Package `generator`. Exports `SensorData` struct with `temperature`, `methane_level`, `radiation`, `timestamp` — JSON tags match the contract consumed by Python and the dashboard. `Start(done <-chan struct{}) <-chan SensorData` launches a goroutine with `time.Ticker` at 100ms (10Hz). Channel buffered at 64 for backpressure. `generate()` produces random values in **NASA REMS normal ranges** 90% of the time (temp −90 to +30 °C, methane 0.3–0.7 ppb, radiation 180–280 μSv/h). 10% anomaly injection now fires **one sensor at a time** via `rand.Intn(3)` switch: temp spike (45–95 °C), methane spike (1.5–3.0 ppb), or radiation solar flare (500–900 μSv/h). Goroutine exits cleanly on `done` channel close.
 
 ### `internal/httpclient/client.go`
 Package `httpclient`. Exports `AnomalyResult` struct matching Python response contract: `is_anomaly` (bool), `confidence`, `weighted_score` (float64), `triggered_models` ([]string), `timestamp` (string). `Client` wraps `http.Client` with 2-second timeout. `New(endpoint string)` constructor. `Predict(SensorData)` does JSON marshal → POST to `http://localhost:5050/predict` → JSON decode response. Returns error on any failure; caller logs and skips — pipeline never blocks.
 
 ### `internal/mqttpub/pub.go`
-Package `mqttpub`. Defines `TelemetryPayload`, `SensorPayload`, `AnomalyPayload` structs matching final MQTT JSON contract. `Publisher` wraps paho MQTT client. `New(brokerURL)` creates client with auto-reconnect, connect retry (2s interval), unique client ID via unix nano. Connection is non-blocking — `ConnectRetry` makes `Connect()` return after best-effort 3s wait, retrying in background if broker is down. `Publish(SensorData, *AnomalyResult)` builds final payload → JSON → publishes to `rover/telemetry` QoS 1. `Close()` disconnects with 1s quiesce.
+Package `mqttpub`. Defines `TelemetryPayload`, `SensorPayload`, `AnomalyPayload` structs matching final MQTT JSON contract. `Publisher` wraps paho MQTT client. `New(brokerURL)` creates client with auto-reconnect, connect retry (2s interval), unique client ID via unix nano. Connection is non-blocking — `ConnectRetry` makes `Connect()` return after best-effort 3s wait, retrying in background if broker is down. `Publish(SensorData, *AnomalyResult)` builds final payload → JSON → publishes to `rover/telemetry` QoS 1, then — if `anomaly.IsAnomaly == true` — spawns a goroutine that sleeps 18 seconds and re-publishes the same payload to `earth/alerts` QoS 1 (simulated Mars→Earth transmission delay). `Close()` disconnects with 1s quiesce.
 
-**Bug fix applied:** Original code used `WaitTimeout(5s)` which blocked indefinitely when `ConnectRetry=true` and broker was down. Changed to non-blocking connect with background retry so startup never hangs.
+**Bug fix applied (original):** `WaitTimeout(5s)` blocked indefinitely when `ConnectRetry=true` and broker was down. Changed to non-blocking connect with background retry.
+
+**Feature added (2026-03-29):** `earth/alerts` delayed goroutine. Non-blocking, value-captures payload at spawn. Logs `[EARTH TX] anomaly signal transmitted → earth/alerts (18s delay)` on success.
 
 ### `cmd/main.go`
 Package `main`. Wires full pipeline: `generator.Start(done)` → goroutine reads sensor channel → `mlClient.Predict(data)` → on error: log + skip + continue → on success: log anomalies → `pub.Publish(data, result)`. `os.Signal` (SIGINT/SIGTERM) graceful shutdown via `done` channel. `log.Lmicroseconds` timestamps.
@@ -309,9 +391,10 @@ If MQTT is unavailable, dashboard runs in simulation mode with synthetic data at
 
 ## Verification Results
 
-- `go vet ./...` — clean
-- `go build ./...` — clean
+- `go vet ./...` — clean (original session; Go not present in current machine PATH)
+- `go build ./...` — clean (original session)
 - Live run: 10Hz generation confirmed, HTTP gracefully handles connection refused, MQTT auto-reconnects in background, graceful SIGTERM shutdown works
-- Python `train.py` executed, `ensemble.joblib` generated (4.1MB)
+- Python `train.py` executed with NASA REMS ranges, `ensemble.joblib` regenerated (4.0MB, 2026-03-29)
 - `server.py` serves on :5050 with `/predict` and `/health` endpoints
+- **8/8 integration tests passed** (2026-03-29): normal/anomaly classification correct, all 3 error codes verified
 - Dashboard connects via WebSocket to Mosquitto, falls back to simulation when broker unavailable

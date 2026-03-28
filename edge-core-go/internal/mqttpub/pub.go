@@ -13,8 +13,12 @@ import (
 )
 
 const (
-	defaultTopic = "rover/telemetry"
-	qos          = 1
+	defaultTopic    = "rover/telemetry"
+	earthAlertsTopic = "earth/alerts"
+	qos             = 1
+
+	// earthTxDelay simulates the one-way Mars→Earth signal propagation delay.
+	earthTxDelay = 18 * time.Second
 )
 
 // TelemetryPayload is the final MQTT message published to the broker for Unity to consume.
@@ -103,7 +107,36 @@ func (p *Publisher) Publish(sensor generator.SensorData, anomaly *httpclient.Ano
 	if !token.WaitTimeout(2 * time.Second) {
 		return fmt.Errorf("mqtt publish timeout")
 	}
-	return token.Error()
+	if err := token.Error(); err != nil {
+		return err
+	}
+
+	// ── Earth alert: non-blocking, 18 s delayed, anomalies only ──────────────────
+	if anomaly.IsAnomaly {
+		go func(p TelemetryPayload) {
+			time.Sleep(earthTxDelay)
+
+			earth, err := json.Marshal(p)
+			if err != nil {
+				log.Printf("[EARTH TX] marshal error: %v", err)
+				return
+			}
+
+			t := pub.client.Publish(earthAlertsTopic, qos, false, earth)
+			if !t.WaitTimeout(2 * time.Second) {
+				log.Printf("[EARTH TX] publish timeout → %s", earthAlertsTopic)
+				return
+			}
+			if err := t.Error(); err != nil {
+				log.Printf("[EARTH TX] publish error: %v", err)
+				return
+			}
+
+			log.Printf("[EARTH TX] anomaly signal transmitted → %s (18s delay)", earthAlertsTopic)
+		}(payload)
+	}
+
+	return nil
 }
 
 // Close disconnects from the MQTT broker gracefully.

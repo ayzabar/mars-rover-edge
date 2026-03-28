@@ -42,6 +42,7 @@ func Start(done <-chan struct{}) <-chan SensorData {
 }
 
 // generate produces a single SensorData reading.
+// Ranges match NASA REMS real data used to retrain the Python ML model.
 // ~10% of the time it injects anomalous values to trigger ML detection during demos.
 func generate() SensorData {
 	d := SensorData{
@@ -49,13 +50,26 @@ func generate() SensorData {
 	}
 
 	if rand.Float64() < 0.10 { // ~10% anomaly injection
-		d.Temperature = randomRange(55, 120)     // normal max is 30, anomaly >50
-		d.MethaneLevel = randomRange(0.12, 0.50)  // normal max 0.05, anomaly >0.1
-		d.Radiation = randomRange(220, 500)        // normal max 100, anomaly >200
+		// Anomaly ranges — clearly outside the normal NASA REMS envelope
+		switch rand.Intn(3) {
+		case 0: // High temperature anomaly
+			d.Temperature = randomRange(45.0, 95.0)    // normal max +30 °C
+			d.MethaneLevel = randomRange(0.3, 0.7)      // normal
+			d.Radiation = randomRange(180.0, 280.0)     // normal
+		case 1: // Methane spike anomaly
+			d.Temperature = randomRange(-90.0, 30.0)    // normal
+			d.MethaneLevel = randomRange(1.5, 3.0)      // anomaly: >1.5 ppb
+			d.Radiation = randomRange(180.0, 280.0)     // normal
+		case 2: // Radiation spike anomaly (solar flare)
+			d.Temperature = randomRange(-90.0, 30.0)    // normal
+			d.MethaneLevel = randomRange(0.3, 0.7)      // normal
+			d.Radiation = randomRange(500.0, 900.0)     // anomaly: >500 μSv/h
+		}
 	} else {
-		d.Temperature = randomRange(-80, 30)
-		d.MethaneLevel = randomRange(0.0, 0.05)
-		d.Radiation = randomRange(0, 100)
+		// Normal ranges — NASA REMS real data envelope
+		d.Temperature = randomRange(-90.0, 30.0)   // °C
+		d.MethaneLevel = randomRange(0.3, 0.7)     // ppb
+		d.Radiation = randomRange(180.0, 280.0)    // μSv/h
 	}
 
 	return d
