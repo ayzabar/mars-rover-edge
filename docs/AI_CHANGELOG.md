@@ -1,5 +1,62 @@
 # AI Changelog — Mars Rover Edge Computing Project
 
+---
+
+## [2026-03-29] train.py — NASA REMS Data Ranges + Turkish Output + Self-Test
+
+### What Changed
+
+**File:** `anomaly-ml-python/train.py`
+
+#### 1. NASA REMS Real Data Ranges Applied
+Previous ranges were approximations. Updated to match real NASA REMS sensor data published from Curiosity rover:
+
+| Sensor          | Normal Range            | Anomaly Threshold               |
+|-----------------|-------------------------|---------------------------------|
+| Temperature     | −90 … +30 °C            | > 40 °C or < −110 °C            |
+| Radiation       | 180 … 280 μSv/h         | > 500 μSv/h (solar flare)       |
+| Methane Level   | 0.3 … 0.7 ppb           | > 1.5 ppb                       |
+
+Both `generate_normal_samples()` and `generate_anomaly_samples()` now use these corrected bounds. Constants defined at module level (`TEMP_MIN_NORMAL`, `RAD_MAX_NORMAL`, `METH_ANOMALY`, etc.) for clarity and easy maintenance.
+
+#### 2. Turkish Status Messages
+Output messages updated to Turkish per project convention:
+- `✅ Model eğitiliyor...`
+- `✅ Model kaydedildi: models/ensemble.joblib`
+
+#### 3. Self-Test Added
+`self_test()` function runs at the end of training, calling `inference.predict()` with:
+- A **normal** sample (temp=0 °C, methane=0.5 ppb, radiation=230 μSv/h) → verifies `is_anomaly: False`
+- An **anomalous** sample (temp=50 °C, methane=2.5 ppb, radiation=650 μSv/h) → verifies `is_anomaly: True`
+
+#### 4. Windows UTF-8 Fix
+Added `sys.stdout` reconfiguration at startup to force UTF-8 encoding on Windows terminals using Turkish locale (cp1254), preventing `UnicodeEncodeError` on emoji/Turkish characters.
+
+### Verification Results
+
+```
+✅ Model eğitiliyor...
+   Normal samples  : 9000
+   Anomaly samples : 1000
+   Total           : 10000
+
+🌲 Training Isolation Forest (contamination=0.1) …
+🔍 Training LOF (novelty=True, contamination=0.1) …
+📊 Computing Z-Score statistics from normal samples …
+
+✅ Model kaydedildi: models/ensemble.joblib
+
+✅ Normal veri testi  → is_anomaly: False
+✅ Anomali veri testi → is_anomaly: True
+
+🎉 Eğitim tamamlandı. Sunucuyu başlatmak için server.py'yi çalıştırın.
+```
+
+- `models/ensemble.joblib` regenerated: **4.0 MB** (2026-03-29 01:09:20)
+- Run command: `$env:PYTHONIOENCODING="utf-8"; python train.py`
+
+---
+
 ## Project Overview
 
 Mars Rover edge computing simulation. A Go backend generates synthetic sensor data at 10Hz, sends it to a Python Flask ML server for anomaly detection (3-model weighted voting ensemble), then publishes combined sensor+anomaly results via MQTT to a web dashboard. Stack: Go 1.22+ → Python 3.10+ (Flask) → Eclipse Mosquitto (MQTT) → Web Dashboard (HTML/JS/Chart.js). All inter-service communication is HTTP/JSON REST (Go↔Python) and MQTT/JSON (Go→Dashboard via WebSocket). No gRPC/Protobuf.
