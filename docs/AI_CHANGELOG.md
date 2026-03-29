@@ -2,6 +2,44 @@
 
 ---
 
+## [2026-03-29] earth_dashboard.html — Timeline Panel: Scatter Plot → Vertical Event List
+
+### What Changed
+
+**File:** `earth_dashboard.html`
+
+#### Problem
+The Transmission Timeline panel used a Chart.js scatter plot where X = timestamp and Y = weighted_score. Because alerts arrive in bursts (close timestamps) and often have similar scores, dots piled on top of each other into an unreadable blob.
+
+#### Fix: Pure HTML/CSS Vertical Event Timeline
+Removed the Chart.js `<canvas>` scatter plot entirely. Replaced it with a scrollable vertical list of alert events (newest at top). No canvas, no Chart.js dependency for this panel.
+
+Each event row displays:
+- **Severity dot** — colored circle (red/amber/green) with matching glow (`box-shadow`)
+- **Timestamp** — HH:MM:SS UTC
+- **Score badge** — severity-tinted background + border (e.g. `rgba(255,59,59,0.15)` for critical)
+- **Model tags** — triggered models (IF+LOF+ZSCORE) in blue
+- **Sensor summary** — one-line reading (e.g. `T=70.3°C`) with ellipsis overflow
+
+#### Changes by section
+
+| Section | Removed | Added |
+|---------|---------|-------|
+| CSS (lines 277–296) | `#timeline-chart-wrap` | `#timeline-events`, `.tl-event`, `.tl-dot`, `.tl-time`, `.tl-score`, `.tl-models`, `.tl-info`, `#timeline-empty`, `@keyframes tl-fade-in` |
+| HTML (lines 410–421) | `<canvas id="timeline-chart">`, "← 5 MIN AGO / NOW →" labels | `<div id="timeline-events">` with `▷ NO EVENTS YET` placeholder, event counter `<span id="tl-count">` |
+| JS (lines 700–792) | `new Chart(ctx, { type: 'scatter' ... })`, `pushTimelinePoint()` with Chart.js updates, 10s `setInterval` x-axis refresh | `pushTimelinePoint()` builds DOM rows, prepends newest-first, trims to `MAX_TIMELINE` |
+| JS state (line 496–497) | `const timelinePoints = []` | `let timelineCount = 0` |
+
+Panel height increased from `flex: 0 0 140px` → `flex: 0 0 220px` to fit event rows. Fade-in animation (`tl-fade-in`) and hover highlight added. Scrollbar styled to match Signal Feed panel.
+
+### Verification
+
+- No remaining references to `timelineChart`, `timeline-chart`, or `timelinePoints` in the file (verified via grep).
+- `pushTimelinePoint(score, infoStr)` function signature unchanged — callers (`processAlert`) require zero changes.
+- Chart.js is still loaded (used by other dashboards / `dashboard.html`), but this panel no longer uses it.
+
+---
+
 ## [2026-03-29] Python ML Stack — Initial Build + Go Sensor/Pub Updates
 
 ### What Changed
@@ -98,7 +136,7 @@ A second single-file HTML dashboard (`earth_dashboard.html`) was created alongsi
 
 **Left column:**
 - **Signal Feed** — terminal-style anomaly cards with red left border, slide-in animation, and full data: origin timestamp (Mars), transmission timestamp (Earth), 18.4s delay label, per-sensor [CRITICAL/ELEVATED/NOMINAL] tags, triggered models (IF/LOF/ZSCORE), weighted score, and human-readable root cause text.
-- **Transmission Timeline** — Chart.js scatter plot of the last 10 received alerts over a 5-minute sliding window. Dot size scales with weighted score (4–16px range). Auto-scrolls every 10s.
+- **Transmission Timeline** — pure HTML/CSS vertical event list showing the last 10 alerts (newest at top). Each row: severity-colored dot with glow, HH:MM:SS timestamp, score badge, model tags, sensor summary. Scrollable, with fade-in animation.
 
 **Right column:**
 - **Anomaly Statistics** — live counters: total signals received, CRITICAL (score > 0.8), ELEVATED (0.5 < score ≤ 0.8), most-triggered model, average weighted score, peak temperature/radiation/methane, session uptime.
