@@ -113,16 +113,16 @@ func (p *Publisher) Publish(sensor generator.SensorData, anomaly *httpclient.Ano
 
 	// ── Earth alert: non-blocking, 18 s delayed, anomalies only ──────────────────
 	if anomaly.IsAnomaly {
-		go func(p TelemetryPayload) {
+		go func(pl TelemetryPayload) {
 			time.Sleep(earthTxDelay)
 
-			earth, err := json.Marshal(p)
+			earth, err := json.Marshal(pl)
 			if err != nil {
 				log.Printf("[EARTH TX] marshal error: %v", err)
 				return
 			}
 
-			t := pub.client.Publish(earthAlertsTopic, qos, false, earth)
+			t := p.client.Publish(earthAlertsTopic, qos, false, earth)
 			if !t.WaitTimeout(2 * time.Second) {
 				log.Printf("[EARTH TX] publish timeout → %s", earthAlertsTopic)
 				return
