@@ -276,7 +276,9 @@
 
     /* ── Timeline ─────────────────────────────────────────────────────── */
     #timeline-panel {
-      flex: 0 0 140px;
+      flex: 0 0 220px;
+      min-height: 0;
+      overflow: hidden;
     }
 
     #timeline-meta {
@@ -289,10 +291,95 @@
 
     #last-signal-ago { color: var(--amber); }
 
-    #timeline-chart-wrap {
+    /* Scrollable event list */
+    #timeline-events {
       flex: 1 1 0;
       min-height: 0;
-      position: relative;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    #timeline-events::-webkit-scrollbar       { width: 4px; }
+    #timeline-events::-webkit-scrollbar-track  { background: transparent; }
+    #timeline-events::-webkit-scrollbar-thumb  { background: var(--border-hi); border-radius: 2px; }
+
+    #timeline-empty {
+      font-size: 9px;
+      color: var(--text-dim);
+      padding: 12px 0;
+      text-align: center;
+      animation: blink 1.4s step-start infinite;
+    }
+
+    /* Individual event row */
+    .tl-event {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-size: 10px;
+      animation: tl-fade-in 0.3s ease-out;
+      flex-shrink: 0;
+    }
+
+    @keyframes tl-fade-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .tl-event:hover { background: rgba(0,119,255,0.06); }
+
+    /* Severity dot with glow */
+    .tl-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .tl-dot.critical { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+    .tl-dot.elevated { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+    .tl-dot.nominal  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+    /* Timestamp */
+    .tl-time {
+      color: var(--text-dim);
+      font-size: 9px;
+      width: 60px;
+      flex-shrink: 0;
+    }
+
+    /* Score badge */
+    .tl-score {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 2px;
+      flex-shrink: 0;
+      min-width: 36px;
+      text-align: center;
+    }
+    .tl-score.critical { background: rgba(255,59,59,0.15); color: var(--red);   border: 1px solid rgba(255,59,59,0.3); }
+    .tl-score.elevated { background: rgba(255,184,0,0.15); color: var(--amber); border: 1px solid rgba(255,184,0,0.3); }
+    .tl-score.nominal  { background: rgba(0,220,130,0.15); color: var(--green); border: 1px solid rgba(0,220,130,0.3); }
+
+    /* Model tags */
+    .tl-models {
+      font-size: 9px;
+      color: var(--blue);
+      flex-shrink: 0;
+    }
+
+    /* Sensor summary */
+    .tl-info {
+      font-size: 9px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1 1 0;
+      min-width: 0;
     }
 
     /* ── Stats ────────────────────────────────────────────────────────── */
@@ -411,12 +498,11 @@
       <div class="panel" id="timeline-panel">
         <div class="panel-title">// transmission timeline</div>
         <div id="timeline-meta">
-          <span>← 5 MINUTES AGO</span>
+          <span>EVENTS: <span id="tl-count">0</span></span>
           <span>LAST SIGNAL: <span id="last-signal-ago">—</span></span>
-          <span>NOW →</span>
         </div>
-        <div id="timeline-chart-wrap">
-          <canvas id="timeline-chart"></canvas>
+        <div id="timeline-events">
+          <div id="timeline-empty">▷ NO EVENTS YET</div>
         </div>
       </div>
 
@@ -493,8 +579,8 @@
       peakMeth: null
     };
 
-    // Timeline points array: { x: timestamp_ms, y: score, info: string }
-    const timelinePoints = [];
+    // Timeline events array (kept for count tracking)
+    let timelineCount = 0;
 
     // Severity gauge queue
     const gaugeScores = [];
@@ -698,98 +784,54 @@
     }
 
     /* ══════════════════════════════════════════════════════════════════════
-       TIMELINE CHART
+       TIMELINE (pure HTML/CSS vertical event list)
        ══════════════════════════════════════════════════════════════════════ */
-    const ctx = document.getElementById('timeline-chart').getContext('2d');
-    const timelineChart = new Chart(ctx, {
-      type: 'scatter',
-      data: {
-        datasets: [{
-          data: [],
-          pointBackgroundColor: [],
-          pointBorderColor: [],
-          pointRadius: [],
-          pointHoverRadius: [],
-          showLine: true,
-          borderColor: 'rgba(0,119,255,0.2)',
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: function (ctx) {
-                const pt = ctx.raw;
-                return pt.info || ('Score: ' + (pt.y || 0).toFixed(2));
-              }
-            },
-            backgroundColor: '#0d1420',
-            borderColor: 'rgba(0,119,255,0.4)',
-            borderWidth: 1,
-            titleColor: '#e8f4ff',
-            bodyColor: '#c8d8e8',
-            titleFont: { family: "'Share Tech Mono', monospace", size: 10 },
-            bodyFont:  { family: "'Share Tech Mono', monospace", size: 10 }
-          }
-        },
-        scales: {
-          x: {
-            type: 'linear',
-            min: function () { return Date.now() - 5 * 60 * 1000; },
-            max: function () { return Date.now(); },
-            ticks: { display: false },
-            grid: { color: 'rgba(255,255,255,0.04)' },
-            border: { color: 'rgba(0,119,255,0.3)' }
-          },
-          y: {
-            min: 0,
-            max: 1,
-            ticks: {
-              color: '#5a7a8a',
-              font: { family: "'Share Tech Mono', monospace", size: 9 },
-              stepSize: 0.25
-            },
-            grid: { color: 'rgba(255,255,255,0.04)' },
-            border: { color: 'rgba(0,119,255,0.3)' }
-          }
-        }
-      }
-    });
+    const $timelineEvents = document.getElementById('timeline-events');
+    const $timelineEmpty  = document.getElementById('timeline-empty');
+    const $tlCount        = document.getElementById('tl-count');
 
     function pushTimelinePoint(score, infoStr) {
-      const now = Date.now();
-      const size = 4 + Math.round(score * 12);   // 4–16px based on severity
-      // Thresholds aligned with stats: > 0.8 = critical/red, > 0.5 = elevated/amber
-      const color = score > 0.8 ? '#ff3b3b' : score > 0.5 ? '#ffb800' : '#00dc82';
+      // Hide the empty placeholder
+      if ($timelineEmpty) $timelineEmpty.style.display = 'none';
 
-      timelinePoints.push({ x: now, y: score, info: infoStr });
-      if (timelinePoints.length > MAX_TIMELINE) timelinePoints.shift();
+      timelineCount++;
+      $tlCount.textContent = Math.min(timelineCount, MAX_TIMELINE);
 
-      timelineChart.data.datasets[0].data = timelinePoints;
-      timelineChart.data.datasets[0].pointBackgroundColor = timelinePoints.map(function (p) {
-        return p.y > 0.8 ? '#ff3b3b' : p.y > 0.5 ? '#ffb800' : '#00dc82';
-      });
-      timelineChart.data.datasets[0].pointRadius  = timelinePoints.map(function (p) { return 4 + Math.round(p.y * 12); });
-      timelineChart.data.datasets[0].pointHoverRadius = timelinePoints.map(function (p) { return 6 + Math.round(p.y * 14); });
+      // Determine severity class
+      var sevClass = score > 0.8 ? 'critical' : score > 0.5 ? 'elevated' : 'nominal';
 
-      const fiveMinAgo = now - 5 * 60 * 1000;
-      timelineChart.options.scales.x.min = fiveMinAgo;
-      timelineChart.options.scales.x.max = now;
-      timelineChart.update('none');
+      // Build timestamp string (HH:MM:SS)
+      var now = new Date();
+      var hh = String(now.getUTCHours()).padStart(2, '0');
+      var mm = String(now.getUTCMinutes()).padStart(2, '0');
+      var ss = String(now.getUTCSeconds()).padStart(2, '0');
+      var timeStr = hh + ':' + mm + ':' + ss;
+
+      // Parse infoStr to extract model tags  (format: "T=xx.x°C · score=x.xx · MODEL+MODEL")
+      var parts = (infoStr || '').split(' · ');
+      var modelsStr = parts.length >= 3 ? parts[2] : '';
+      var sensorStr = parts.length >= 1 ? parts[0] : '';
+
+      // Build the event row
+      var row = document.createElement('div');
+      row.className = 'tl-event';
+      row.innerHTML =
+        '<span class="tl-dot ' + sevClass + '"></span>' +
+        '<span class="tl-time">' + timeStr + '</span>' +
+        '<span class="tl-score ' + sevClass + '">' + score.toFixed(2) + '</span>' +
+        '<span class="tl-models">' + modelsStr + '</span>' +
+        '<span class="tl-info">' + sensorStr + '</span>';
+
+      // Prepend (newest at top)
+      $timelineEvents.insertBefore(row, $timelineEvents.firstChild);
+
+      // Trim to MAX_TIMELINE
+      var rows = $timelineEvents.querySelectorAll('.tl-event');
+      while (rows.length > MAX_TIMELINE) {
+        rows[rows.length - 1].remove();
+        rows = $timelineEvents.querySelectorAll('.tl-event');
+      }
     }
-
-    // Refresh timeline x-axis every 10s so window scrolls forward
-    setInterval(function () {
-      const now = Date.now();
-      timelineChart.options.scales.x.min = now - 5 * 60 * 1000;
-      timelineChart.options.scales.x.max = now;
-      timelineChart.update('none');
-    }, 10000);
 
     /* ══════════════════════════════════════════════════════════════════════
        STATS UPDATE
